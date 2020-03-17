@@ -19,23 +19,22 @@ package kafka.server.checkpoints
 import java.io._
 import java.util.regex.Pattern
 
+import kafka.server.LogDirFailureChannel
 import kafka.server.epoch.EpochEntry
 
 import scala.collection._
 
 trait LeaderEpochCheckpoint {
-  def write(epochs: Seq[EpochEntry])
+  def write(epochs: Seq[EpochEntry]): Unit
   def read(): Seq[EpochEntry]
 }
 
-object LeaderEpochFile {
-  private val LeaderEpochCheckpointFilename = "leader-epoch-checkpoint"
-  def newFile(dir: File): File = new File(dir, LeaderEpochCheckpointFilename)
-}
-
 object LeaderEpochCheckpointFile {
+  private val LeaderEpochCheckpointFilename = "leader-epoch-checkpoint"
   private val WhiteSpacesPattern = Pattern.compile("\\s+")
   private val CurrentVersion = 0
+
+  def newFile(dir: File): File = new File(dir, LeaderEpochCheckpointFilename)
 
   object Formatter extends CheckpointFileFormatter[EpochEntry] {
 
@@ -55,10 +54,10 @@ object LeaderEpochCheckpointFile {
 /**
   * This class persists a map of (LeaderEpoch => Offsets) to a file (for a certain replica)
   */
-class LeaderEpochCheckpointFile(val file: File) extends LeaderEpochCheckpoint {
+class LeaderEpochCheckpointFile(val file: File, logDirFailureChannel: LogDirFailureChannel = null) extends LeaderEpochCheckpoint {
   import LeaderEpochCheckpointFile._
 
-  val checkpoint = new CheckpointFile[EpochEntry](file, CurrentVersion, Formatter)
+  val checkpoint = new CheckpointFile[EpochEntry](file, CurrentVersion, Formatter, logDirFailureChannel, file.getParentFile.getParent)
 
   def write(epochs: Seq[EpochEntry]): Unit = checkpoint.write(epochs)
 

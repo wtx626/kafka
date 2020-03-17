@@ -16,157 +16,126 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.network.Send;
+import org.apache.kafka.common.message.ApiVersionsResponseData;
+import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionsResponseKey;
+import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionsResponseKeyCollection;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.SchemaException;
 import org.apache.kafka.common.protocol.types.Struct;
 import org.apache.kafka.common.record.RecordBatch;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
+/**
+ * Possible error codes:
+ * - {@link Errors#UNSUPPORTED_VERSION}
+ * - {@link Errors#INVALID_REQUEST}
+ */
 public class ApiVersionsResponse extends AbstractResponse {
 
-    public static final ApiVersionsResponse API_VERSIONS_RESPONSE = createApiVersionsResponse(DEFAULT_THROTTLE_TIME, RecordBatch.CURRENT_MAGIC_VALUE);
-    private static final String THROTTLE_TIME_KEY_NAME = "throttle_time_ms";
-    public static final String ERROR_CODE_KEY_NAME = "error_code";
-    public static final String API_VERSIONS_KEY_NAME = "api_versions";
-    public static final String API_KEY_NAME = "api_key";
-    public static final String MIN_VERSION_KEY_NAME = "min_version";
-    public static final String MAX_VERSION_KEY_NAME = "max_version";
+    public static final ApiVersionsResponse DEFAULT_API_VERSIONS_RESPONSE =
+        createApiVersionsResponse(DEFAULT_THROTTLE_TIME, RecordBatch.CURRENT_MAGIC_VALUE);
 
-    /**
-     * Possible error codes:
-     *
-     * UNSUPPORTED_VERSION (33)
-     */
-    private final Errors error;
-    private final int throttleTimeMs;
-    private final Map<Short, ApiVersion> apiKeyToApiVersion;
+    public final ApiVersionsResponseData data;
 
-    public static final class ApiVersion {
-        public final short apiKey;
-        public final short minVersion;
-        public final short maxVersion;
-
-        public ApiVersion(ApiKeys apiKey) {
-            this(apiKey.id, apiKey.oldestVersion(), apiKey.latestVersion());
-        }
-
-        public ApiVersion(short apiKey, short minVersion, short maxVersion) {
-            this.apiKey = apiKey;
-            this.minVersion = minVersion;
-            this.maxVersion = maxVersion;
-        }
-
-        @Override
-        public String toString() {
-            return "ApiVersion(" +
-                    "apiKey=" + apiKey +
-                    ", minVersion=" + minVersion +
-                    ", maxVersion= " + maxVersion +
-                    ")";
-        }
-    }
-
-    public ApiVersionsResponse(Errors error, List<ApiVersion> apiVersions) {
-        this(DEFAULT_THROTTLE_TIME, error, apiVersions);
-    }
-
-    public ApiVersionsResponse(int throttleTimeMs, Errors error, List<ApiVersion> apiVersions) {
-        this.throttleTimeMs = throttleTimeMs;
-        this.error = error;
-        this.apiKeyToApiVersion = buildApiKeyToApiVersion(apiVersions);
+    public ApiVersionsResponse(ApiVersionsResponseData data) {
+        this.data = data;
     }
 
     public ApiVersionsResponse(Struct struct) {
-        this.throttleTimeMs = struct.hasField(THROTTLE_TIME_KEY_NAME) ? struct.getInt(THROTTLE_TIME_KEY_NAME) : DEFAULT_THROTTLE_TIME;
-        this.error = Errors.forCode(struct.getShort(ERROR_CODE_KEY_NAME));
-        List<ApiVersion> tempApiVersions = new ArrayList<>();
-        for (Object apiVersionsObj : struct.getArray(API_VERSIONS_KEY_NAME)) {
-            Struct apiVersionStruct = (Struct) apiVersionsObj;
-            short apiKey = apiVersionStruct.getShort(API_KEY_NAME);
-            short minVersion = apiVersionStruct.getShort(MIN_VERSION_KEY_NAME);
-            short maxVersion = apiVersionStruct.getShort(MAX_VERSION_KEY_NAME);
-            tempApiVersions.add(new ApiVersion(apiKey, minVersion, maxVersion));
-        }
-        this.apiKeyToApiVersion = buildApiKeyToApiVersion(tempApiVersions);
+        this(new ApiVersionsResponseData(struct, (short) (ApiVersionsResponseData.SCHEMAS.length - 1)));
+    }
+
+    public ApiVersionsResponse(Struct struct, short version) {
+        this(new ApiVersionsResponseData(struct, version));
     }
 
     @Override
     protected Struct toStruct(short version) {
-        Struct struct = new Struct(ApiKeys.API_VERSIONS.responseSchema(version));
-        if (struct.hasField(THROTTLE_TIME_KEY_NAME))
-            struct.set(THROTTLE_TIME_KEY_NAME, throttleTimeMs);
-        struct.set(ERROR_CODE_KEY_NAME, error.code());
-        List<Struct> apiVersionList = new ArrayList<>();
-        for (ApiVersion apiVersion : apiKeyToApiVersion.values()) {
-            Struct apiVersionStruct = struct.instance(API_VERSIONS_KEY_NAME);
-            apiVersionStruct.set(API_KEY_NAME, apiVersion.apiKey);
-            apiVersionStruct.set(MIN_VERSION_KEY_NAME, apiVersion.minVersion);
-            apiVersionStruct.set(MAX_VERSION_KEY_NAME, apiVersion.maxVersion);
-            apiVersionList.add(apiVersionStruct);
+        return this.data.toStruct(version);
+    }
+
+    public ApiVersionsResponseKey apiVersion(short apiKey) {
+        return data.apiKeys().find(apiKey);
+    }
+
+    @Override
+    public Map<Errors, Integer> errorCounts() {
+        return errorCounts(Errors.forCode(this.data.errorCode()));
+    }
+
+    @Override
+    public int throttleTimeMs() {
+        return this.data.throttleTimeMs();
+    }
+
+    @Override
+    public boolean shouldClientThrottle(short version) {
+        return version >= 2;
+    }
+
+    public static ApiVersionsResponse parse(ByteBuffer buffer, short version) {
+        // Fallback to version 0 for ApiVersions response. If a client sends an ApiVersionsRequest
+        // using a version higher than that supported by the broker, a version 0 response is sent
+        // to the client indicating UNSUPPORTED_VERSION. When the client receives the response, it
+        // falls back while parsing it into a Struct which means that the version received by this
+        // method is not necessary the real one. It may be version 0 as well.
+        int prev = buffer.position();
+        try {
+            return new ApiVersionsResponse(
+                new ApiVersionsResponseData(new ByteBufferAccessor(buffer), version));
+        } catch (RuntimeException e) {
+            buffer.position(prev);
+            if (version != 0)
+                return new ApiVersionsResponse(
+                    new ApiVersionsResponseData(new ByteBufferAccessor(buffer), (short) 0));
+            else
+                throw e;
         }
-        struct.set(API_VERSIONS_KEY_NAME, apiVersionList.toArray());
-        return struct;
+    }
+
+    public static ApiVersionsResponse fromStruct(Struct struct, short version) {
+        // Fallback to version 0 for ApiVersions response. If a client sends an ApiVersionsRequest
+        // using a version higher than that supported by the broker, a version 0 response is sent
+        // to the client indicating UNSUPPORTED_VERSION. When the client receives the response, it
+        // falls back while parsing it into a Struct which means that the version received by this
+        // method is not necessary the real one. It may be version 0 as well.
+        try {
+            return new ApiVersionsResponse(struct, version);
+        } catch (SchemaException e) {
+            if (version != 0)
+                return new ApiVersionsResponse(struct, (short) 0);
+            else
+                throw e;
+        }
     }
 
     public static ApiVersionsResponse apiVersionsResponse(int throttleTimeMs, byte maxMagic) {
         if (maxMagic == RecordBatch.CURRENT_MAGIC_VALUE && throttleTimeMs == DEFAULT_THROTTLE_TIME) {
-            return API_VERSIONS_RESPONSE;
+            return DEFAULT_API_VERSIONS_RESPONSE;
         }
         return createApiVersionsResponse(throttleTimeMs, maxMagic);
     }
 
-    /**
-     * Returns Errors.UNSUPPORTED_VERSION response with version 0 since we don't support the requested version.
-     */
-    public static Send unsupportedVersionSend(String destination, RequestHeader requestHeader) {
-        ApiVersionsResponse response = new ApiVersionsResponse(DEFAULT_THROTTLE_TIME, Errors.UNSUPPORTED_VERSION,
-                Collections.<ApiVersion>emptyList());
-        return response.toSend(destination, (short) 0, requestHeader.toResponseHeader());
-    }
-
-    public int throttleTimeMs() {
-        return throttleTimeMs;
-    }
-
-    public Collection<ApiVersion> apiVersions() {
-        return apiKeyToApiVersion.values();
-    }
-
-    public ApiVersion apiVersion(short apiKey) {
-        return apiKeyToApiVersion.get(apiKey);
-    }
-
-    public Errors error() {
-        return error;
-    }
-
-    public static ApiVersionsResponse parse(ByteBuffer buffer, short version) {
-        return new ApiVersionsResponse(ApiKeys.API_VERSIONS.parseResponse(version, buffer));
-    }
-
     public static ApiVersionsResponse createApiVersionsResponse(int throttleTimeMs, final byte minMagic) {
-        List<ApiVersion> versionList = new ArrayList<>();
+        ApiVersionsResponseKeyCollection apiKeys = new ApiVersionsResponseKeyCollection();
         for (ApiKeys apiKey : ApiKeys.values()) {
             if (apiKey.minRequiredInterBrokerMagic <= minMagic) {
-                versionList.add(new ApiVersion(apiKey));
+                apiKeys.add(new ApiVersionsResponseKey()
+                    .setApiKey(apiKey.id)
+                    .setMinVersion(apiKey.oldestVersion())
+                    .setMaxVersion(apiKey.latestVersion()));
             }
         }
-        return new ApiVersionsResponse(throttleTimeMs, Errors.NONE, versionList);
-    }
 
-    private Map<Short, ApiVersion> buildApiKeyToApiVersion(List<ApiVersion> apiVersions) {
-        Map<Short, ApiVersion> tempApiIdToApiVersion = new HashMap<>();
-        for (ApiVersion apiVersion: apiVersions) {
-            tempApiIdToApiVersion.put(apiVersion.apiKey, apiVersion);
-        }
-        return tempApiIdToApiVersion;
+        ApiVersionsResponseData data = new ApiVersionsResponseData();
+        data.setThrottleTimeMs(throttleTimeMs);
+        data.setErrorCode(Errors.NONE.code());
+        data.setApiKeys(apiKeys);
+
+        return new ApiVersionsResponse(data);
     }
 }

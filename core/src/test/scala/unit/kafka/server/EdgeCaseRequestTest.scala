@@ -27,9 +27,10 @@ import kafka.utils._
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.protocol.types.Type
-import org.apache.kafka.common.protocol.{ApiKeys, Errors, SecurityProtocol}
-import org.apache.kafka.common.record.{CompressionType, SimpleRecord, RecordBatch, MemoryRecords}
+import org.apache.kafka.common.protocol.{ApiKeys, Errors}
+import org.apache.kafka.common.record.{CompressionType, MemoryRecords, SimpleRecord}
 import org.apache.kafka.common.requests.{ProduceRequest, ProduceResponse, ResponseHeader}
+import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.junit.Assert._
 import org.junit.Test
 
@@ -37,7 +38,7 @@ import scala.collection.JavaConverters._
 
 class EdgeCaseRequestTest extends KafkaServerTestHarness {
 
-  def generateConfigs() = {
+  def generateConfigs = {
     val props = TestUtils.createBrokerConfig(1, zkConnect)
     props.setProperty(KafkaConfig.AutoCreateTopicsEnableProp, "false")
     List(KafkaConfig.fromProps(props))
@@ -49,7 +50,7 @@ class EdgeCaseRequestTest extends KafkaServerTestHarness {
     new Socket("localhost", s.boundPort(ListenerName.forSecurityProtocol(protocol)))
   }
 
-  private def sendRequest(socket: Socket, request: Array[Byte], id: Option[Short] = None) {
+  private def sendRequest(socket: Socket, request: Array[Byte], id: Option[Short] = None): Unit = {
     val outgoing = new DataOutputStream(socket.getOutputStream)
     id match {
       case Some(id) =>
@@ -97,7 +98,7 @@ class EdgeCaseRequestTest extends KafkaServerTestHarness {
     buffer.array()
   }
 
-  private def verifyDisconnect(request: Array[Byte]) {
+  private def verifyDisconnect(request: Array[Byte]): Unit = {
     val plainSocket = connect()
     try {
       sendRequest(plainSocket, requestHeaderBytes(-1, 0))
@@ -108,29 +109,28 @@ class EdgeCaseRequestTest extends KafkaServerTestHarness {
   }
 
   @Test
-  def testProduceRequestWithNullClientId() {
+  def testProduceRequestWithNullClientId(): Unit = {
     val topic = "topic"
     val topicPartition = new TopicPartition(topic, 0)
     val correlationId = -1
-    TestUtils.createTopic(zkUtils, topic, numPartitions = 1, replicationFactor = 1, servers = servers)
+    createTopic(topic, numPartitions = 1, replicationFactor = 1)
 
-    val version = 2: Short
-    val serializedBytes = {
-      val headerBytes = requestHeaderBytes(ApiKeys.PRODUCE.id, ApiKeys.PRODUCE.latestVersion, null,
+    val version = ApiKeys.PRODUCE.latestVersion: Short
+    val (serializedBytes, responseHeaderVersion) = {
+      val headerBytes = requestHeaderBytes(ApiKeys.PRODUCE.id, version, null,
         correlationId)
       val records = MemoryRecords.withRecords(CompressionType.NONE, new SimpleRecord("message".getBytes))
-      val request = new ProduceRequest.Builder(RecordBatch.CURRENT_MAGIC_VALUE, 1, 10000,
-        Map(topicPartition -> records).asJava).build()
+      val request = ProduceRequest.Builder.forCurrentMagic(1, 10000, Map(topicPartition -> records).asJava).build()
       val byteBuffer = ByteBuffer.allocate(headerBytes.length + request.toStruct.sizeOf)
       byteBuffer.put(headerBytes)
       request.toStruct.writeTo(byteBuffer)
-      byteBuffer.array()
+      (byteBuffer.array(), request.api.responseHeaderVersion(version))
     }
 
     val response = requestAndReceive(serializedBytes)
 
     val responseBuffer = ByteBuffer.wrap(response)
-    val responseHeader = ResponseHeader.parse(responseBuffer)
+    val responseHeader = ResponseHeader.parse(responseBuffer, responseHeaderVersion)
     val produceResponse = ProduceResponse.parse(responseBuffer, version)
 
     assertEquals("The response should parse completely", 0, responseBuffer.remaining)
@@ -143,22 +143,22 @@ class EdgeCaseRequestTest extends KafkaServerTestHarness {
   }
 
   @Test
-  def testHeaderOnlyRequest() {
+  def testHeaderOnlyRequest(): Unit = {
     verifyDisconnect(requestHeaderBytes(ApiKeys.PRODUCE.id, 1))
   }
 
   @Test
-  def testInvalidApiKeyRequest() {
+  def testInvalidApiKeyRequest(): Unit = {
     verifyDisconnect(requestHeaderBytes(-1, 0))
   }
 
   @Test
-  def testInvalidApiVersionRequest() {
+  def testInvalidApiVersionRequest(): Unit = {
     verifyDisconnect(requestHeaderBytes(ApiKeys.PRODUCE.id, -1))
   }
 
   @Test
-  def testMalformedHeaderRequest() {
+  def testMalformedHeaderRequest(): Unit = {
     val serializedBytes = {
       // Only send apiKey and apiVersion
       val buffer = ByteBuffer.allocate(

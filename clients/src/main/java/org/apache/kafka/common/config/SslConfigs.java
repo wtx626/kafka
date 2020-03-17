@@ -16,26 +16,44 @@
  */
 package org.apache.kafka.common.config;
 
+import org.apache.kafka.common.config.internals.BrokerSecurityConfigs;
+import org.apache.kafka.common.utils.Utils;
+
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.TrustManagerFactory;
+import java.util.Set;
 
 public class SslConfigs {
     /*
      * NOTE: DO NOT CHANGE EITHER CONFIG NAMES AS THESE ARE PART OF THE PUBLIC API AND CHANGE WILL BREAK USER CODE.
      */
 
-    public static final String PRINCIPAL_BUILDER_CLASS_CONFIG = "principal.builder.class";
-    public static final String PRINCIPAL_BUILDER_CLASS_DOC = "The fully qualified name of a class that implements the PrincipalBuilder interface, " +
-            "which is currently used to build the Principal for connections with the SSL SecurityProtocol.";
-    public static final String DEFAULT_PRINCIPAL_BUILDER_CLASS = "org.apache.kafka.common.security.auth.DefaultPrincipalBuilder";
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release.
+     */
+    @Deprecated
+    public static final String PRINCIPAL_BUILDER_CLASS_CONFIG = BrokerSecurityConfigs.PRINCIPAL_BUILDER_CLASS_CONFIG;
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release.
+     */
+    @Deprecated
+    public static final String PRINCIPAL_BUILDER_CLASS_DOC = BrokerSecurityConfigs.PRINCIPAL_BUILDER_CLASS_DOC;
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release. In recent versions,
+     *   the config is optional and there is no default.
+     */
+    // use FQN to avoid import deprecation warning
+    @Deprecated
+    public static final String DEFAULT_PRINCIPAL_BUILDER_CLASS =
+            org.apache.kafka.common.security.auth.DefaultPrincipalBuilder.class.getName();
 
     public static final String SSL_PROTOCOL_CONFIG = "ssl.protocol";
     public static final String SSL_PROTOCOL_DOC = "The SSL protocol used to generate the SSLContext. "
-            + "Default setting is TLS, which is fine for most cases. "
-            + "Allowed values in recent JVMs are TLS, TLSv1.1 and TLSv1.2. SSL, SSLv2 and SSLv3 "
+            + "Default setting is TLSv1.2, which is fine for most cases. "
+            + "Allowed values in recent JVMs are TLSv1.2 and TLSv1.3. TLS, TLSv1.1, SSL, SSLv2 and SSLv3 "
             + "may be supported in older JVMs, but their usage is discouraged due to known security vulnerabilities.";
 
-    public static final String DEFAULT_SSL_PROTOCOL = "TLS";
+    public static final String DEFAULT_SSL_PROTOCOL = "TLSv1.2";
 
     public static final String SSL_PROVIDER_CONFIG = "ssl.provider";
     public static final String SSL_PROVIDER_DOC = "The name of the security provider used for SSL connections. Default value is the default security provider of the JVM.";
@@ -46,7 +64,7 @@ public class SslConfigs {
 
     public static final String SSL_ENABLED_PROTOCOLS_CONFIG = "ssl.enabled.protocols";
     public static final String SSL_ENABLED_PROTOCOLS_DOC = "The list of protocols enabled for SSL connections.";
-    public static final String DEFAULT_SSL_ENABLED_PROTOCOLS = "TLSv1.2,TLSv1.1,TLSv1";
+    public static final String DEFAULT_SSL_ENABLED_PROTOCOLS = "TLSv1.2";
 
     public static final String SSL_KEYSTORE_TYPE_CONFIG = "ssl.keystore.type";
     public static final String SSL_KEYSTORE_TYPE_DOC = "The file format of the key store file. "
@@ -87,19 +105,21 @@ public class SslConfigs {
 
     public static final String SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG = "ssl.endpoint.identification.algorithm";
     public static final String SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_DOC = "The endpoint identification algorithm to validate server hostname using server certificate. ";
+    public static final String DEFAULT_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM = "https";
 
     public static final String SSL_SECURE_RANDOM_IMPLEMENTATION_CONFIG = "ssl.secure.random.implementation";
     public static final String SSL_SECURE_RANDOM_IMPLEMENTATION_DOC = "The SecureRandom PRNG implementation to use for SSL cryptography operations. ";
 
-    public static final String SSL_CLIENT_AUTH_CONFIG = "ssl.client.auth";
-    public static final String SSL_CLIENT_AUTH_DOC = "Configures kafka broker to request client authentication."
-                                           + " The following settings are common: "
-                                           + " <ul>"
-                                           + " <li><code>ssl.client.auth=required</code> If set to required"
-                                           + " client authentication is required."
-                                           + " <li><code>ssl.client.auth=requested</code> This means client authentication is optional."
-                                           + " unlike requested , if this option is set client can choose not to provide authentication information about itself"
-                                           + " <li><code>ssl.client.auth=none</code> This means client authentication is not needed.";
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release.
+     */
+    @Deprecated
+    public static final String SSL_CLIENT_AUTH_CONFIG = BrokerSecurityConfigs.SSL_CLIENT_AUTH_CONFIG;
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release.
+     */
+    @Deprecated
+    public static final String SSL_CLIENT_AUTH_DOC = BrokerSecurityConfigs.SSL_CLIENT_AUTH_DOC;
 
     public static void addClientSslSupport(ConfigDef config) {
         config.define(SslConfigs.SSL_PROTOCOL_CONFIG, ConfigDef.Type.STRING, SslConfigs.DEFAULT_SSL_PROTOCOL, ConfigDef.Importance.MEDIUM, SslConfigs.SSL_PROTOCOL_DOC)
@@ -115,7 +135,27 @@ public class SslConfigs {
                 .define(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, ConfigDef.Type.PASSWORD, null, ConfigDef.Importance.HIGH, SslConfigs.SSL_TRUSTSTORE_PASSWORD_DOC)
                 .define(SslConfigs.SSL_KEYMANAGER_ALGORITHM_CONFIG, ConfigDef.Type.STRING, SslConfigs.DEFAULT_SSL_KEYMANGER_ALGORITHM, ConfigDef.Importance.LOW, SslConfigs.SSL_KEYMANAGER_ALGORITHM_DOC)
                 .define(SslConfigs.SSL_TRUSTMANAGER_ALGORITHM_CONFIG, ConfigDef.Type.STRING, SslConfigs.DEFAULT_SSL_TRUSTMANAGER_ALGORITHM, ConfigDef.Importance.LOW, SslConfigs.SSL_TRUSTMANAGER_ALGORITHM_DOC)
-                .define(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, ConfigDef.Type.STRING, null, ConfigDef.Importance.LOW, SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_DOC)
+                .define(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, ConfigDef.Type.STRING, SslConfigs.DEFAULT_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM, ConfigDef.Importance.LOW, SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_DOC)
                 .define(SslConfigs.SSL_SECURE_RANDOM_IMPLEMENTATION_CONFIG, ConfigDef.Type.STRING, null, ConfigDef.Importance.LOW, SslConfigs.SSL_SECURE_RANDOM_IMPLEMENTATION_DOC);
     }
+
+    public static final Set<String> RECONFIGURABLE_CONFIGS = Utils.mkSet(
+            SslConfigs.SSL_KEYSTORE_TYPE_CONFIG,
+            SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG,
+            SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG,
+            SslConfigs.SSL_KEY_PASSWORD_CONFIG,
+            SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG,
+            SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG,
+            SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG);
+
+    public static final Set<String> NON_RECONFIGURABLE_CONFIGS = Utils.mkSet(
+            BrokerSecurityConfigs.SSL_CLIENT_AUTH_CONFIG,
+            SslConfigs.SSL_PROTOCOL_CONFIG,
+            SslConfigs.SSL_PROVIDER_CONFIG,
+            SslConfigs.SSL_CIPHER_SUITES_CONFIG,
+            SslConfigs.SSL_ENABLED_PROTOCOLS_CONFIG,
+            SslConfigs.SSL_KEYMANAGER_ALGORITHM_CONFIG,
+            SslConfigs.SSL_TRUSTMANAGER_ALGORITHM_CONFIG,
+            SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG,
+            SslConfigs.SSL_SECURE_RANDOM_IMPLEMENTATION_CONFIG);
 }

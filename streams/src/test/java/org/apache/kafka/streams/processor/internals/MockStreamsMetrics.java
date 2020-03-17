@@ -16,13 +16,13 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import java.util.Collections;
 import org.apache.kafka.common.metrics.Metrics;
+import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 
 public class MockStreamsMetrics extends StreamsMetricsImpl {
 
-    public MockStreamsMetrics(Metrics metrics) {
-        super(metrics, "mock-stream-metrics",
-            Collections.<String, String>emptyMap());
+    public MockStreamsMetrics(final Metrics metrics) {
+        super(metrics, "test", StreamsConfig.METRICS_LATEST);
     }
 }

@@ -16,78 +16,109 @@
  */
 package org.apache.kafka.common.requests;
 
-import static org.apache.kafka.common.protocol.Protocol.REQUEST_HEADER;
+import org.apache.kafka.common.errors.InvalidRequestException;
+import org.apache.kafka.common.errors.UnsupportedVersionException;
+import org.apache.kafka.common.message.RequestHeaderData;
+import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.protocol.ByteBufferAccessor;
+import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
-
-import org.apache.kafka.common.protocol.Protocol;
-import org.apache.kafka.common.protocol.types.Field;
-import org.apache.kafka.common.protocol.types.Struct;
 
 /**
  * The header for a request in the Kafka protocol
  */
-public class RequestHeader extends AbstractRequestResponse {
+public class RequestHeader implements AbstractRequestResponse {
+    private final RequestHeaderData data;
+    private final short headerVersion;
 
-    private static final Field API_KEY_FIELD = REQUEST_HEADER.get("api_key");
-    private static final Field API_VERSION_FIELD = REQUEST_HEADER.get("api_version");
-    private static final Field CLIENT_ID_FIELD = REQUEST_HEADER.get("client_id");
-    private static final Field CORRELATION_ID_FIELD = REQUEST_HEADER.get("correlation_id");
-
-    private final short apiKey;
-    private final short apiVersion;
-    private final String clientId;
-    private final int correlationId;
-
-    public RequestHeader(Struct struct) {
-        apiKey = struct.getShort(API_KEY_FIELD);
-        apiVersion = struct.getShort(API_VERSION_FIELD);
-        clientId = struct.getString(CLIENT_ID_FIELD);
-        correlationId = struct.getInt(CORRELATION_ID_FIELD);
+    public RequestHeader(Struct struct, short headerVersion) {
+        this(new RequestHeaderData(struct, headerVersion), headerVersion);
     }
 
-    public RequestHeader(short apiKey, short version, String client, int correlation) {
-        this.apiKey = apiKey;
-        this.apiVersion = version;
-        this.clientId = client;
-        this.correlationId = correlation;
+    public RequestHeader(ApiKeys requestApiKey, short requestVersion, String clientId, int correlationId) {
+        this(new RequestHeaderData().
+                setRequestApiKey(requestApiKey.id).
+                setRequestApiVersion(requestVersion).
+                setClientId(clientId).
+                setCorrelationId(correlationId),
+            ApiKeys.forId(requestApiKey.id).requestHeaderVersion(requestVersion));
+    }
+
+    public RequestHeader(RequestHeaderData data, short headerVersion) {
+        this.data = data;
+        this.headerVersion = headerVersion;
     }
 
     public Struct toStruct() {
-        Struct struct = new Struct(Protocol.REQUEST_HEADER);
-        struct.set(API_KEY_FIELD, apiKey);
-        struct.set(API_VERSION_FIELD, apiVersion);
-        struct.set(CLIENT_ID_FIELD, clientId);
-        struct.set(CORRELATION_ID_FIELD, correlationId);
-        return struct;
+        return this.data.toStruct(headerVersion);
     }
 
-    public short apiKey() {
-        return apiKey;
+    public ApiKeys apiKey() {
+        return ApiKeys.forId(data.requestApiKey());
     }
 
     public short apiVersion() {
-        return apiVersion;
+        return data.requestApiVersion();
+    }
+
+    public short headerVersion() {
+        return headerVersion;
     }
 
     public String clientId() {
-        return clientId;
+        return data.clientId();
     }
 
     public int correlationId() {
-        return correlationId;
+        return data.correlationId();
+    }
+
+    public RequestHeaderData data() {
+        return data;
     }
 
     public ResponseHeader toResponseHeader() {
-        return new ResponseHeader(correlationId);
+        return new ResponseHeader(data.correlationId(),
+            apiKey().responseHeaderVersion(apiVersion()));
     }
 
     public static RequestHeader parse(ByteBuffer buffer) {
-        return new RequestHeader(Protocol.REQUEST_HEADER.read(buffer));
+        short apiKey = -1;
+        try {
+            apiKey = buffer.getShort();
+            short apiVersion = buffer.getShort();
+            short headerVersion = ApiKeys.forId(apiKey).requestHeaderVersion(apiVersion);
+            buffer.rewind();
+            return new RequestHeader(new RequestHeaderData(
+                new ByteBufferAccessor(buffer), headerVersion), headerVersion);
+        } catch (UnsupportedVersionException e) {
+            throw new InvalidRequestException("Unknown API key " + apiKey, e);
+        } catch (Throwable ex) {
+            throw new InvalidRequestException("Error parsing request header. Our best guess of the apiKey is: " +
+                    apiKey, ex);
+        }
     }
 
     @Override
     public String toString() {
-        return toStruct().toString();
+        return "RequestHeader(apiKey=" + apiKey() +
+                ", apiVersion=" + apiVersion() +
+                ", clientId=" + clientId() +
+                ", correlationId=" + correlationId() +
+                ")";
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        RequestHeader that = (RequestHeader) o;
+        return this.data.equals(that.data);
+    }
+
+    @Override
+    public int hashCode() {
+        return this.data.hashCode();
     }
 }

@@ -17,90 +17,125 @@
 package org.apache.kafka.streams.processor.internals.assignment;
 
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.state.HostInfo;
 import org.junit.Test;
 
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.apache.kafka.common.utils.Utils.mkEntry;
+import static org.apache.kafka.common.utils.Utils.mkMap;
+import static org.apache.kafka.common.utils.Utils.mkSet;
+import static org.apache.kafka.streams.processor.internals.assignment.StreamsAssignmentProtocolVersions.LATEST_SUPPORTED_VERSION;
+import static org.apache.kafka.streams.processor.internals.assignment.StreamsAssignmentProtocolVersions.UNKNOWN;
 import static org.junit.Assert.assertEquals;
 
 public class AssignmentInfoTest {
+    private final List<TaskId> activeTasks = Arrays.asList(
+        new TaskId(0, 0),
+        new TaskId(0, 1),
+        new TaskId(1, 0),
+        new TaskId(1, 1));
+
+    private final Map<TaskId, Set<TopicPartition>> standbyTasks = mkMap(
+        mkEntry(new TaskId(1, 0), mkSet(new TopicPartition("t1", 0), new TopicPartition("t2", 0))),
+        mkEntry(new TaskId(1, 1), mkSet(new TopicPartition("t1", 1), new TopicPartition("t2", 1)))
+    );
+
+    private final Map<HostInfo, Set<TopicPartition>> activeAssignment = mkMap(
+        mkEntry(new HostInfo("localhost", 8088),
+            mkSet(new TopicPartition("t0", 0),
+                new TopicPartition("t1", 0),
+                new TopicPartition("t2", 0))),
+        mkEntry(new HostInfo("localhost", 8089),
+            mkSet(new TopicPartition("t0", 1),
+                new TopicPartition("t1", 1),
+                new TopicPartition("t2", 1)))
+    );
+
+    private final Map<HostInfo, Set<TopicPartition>> standbyAssignment = mkMap(
+        mkEntry(new HostInfo("localhost", 8088),
+            mkSet(new TopicPartition("t1", 0),
+                new TopicPartition("t2", 0))),
+        mkEntry(new HostInfo("localhost", 8089),
+            mkSet(new TopicPartition("t1", 1),
+                new TopicPartition("t2", 1)))
+    );
 
     @Test
-    public void testEncodeDecode() {
-        List<TaskId> activeTasks =
-                Arrays.asList(new TaskId(0, 0), new TaskId(0, 0), new TaskId(0, 1), new TaskId(1, 0));
-        Map<TaskId, Set<TopicPartition>> standbyTasks = new HashMap<>();
+    public void shouldUseLatestSupportedVersionByDefault() {
+        final AssignmentInfo info = new AssignmentInfo(LATEST_SUPPORTED_VERSION, activeTasks, standbyTasks, activeAssignment, standbyAssignment, 0);
+        assertEquals(LATEST_SUPPORTED_VERSION, info.version());
+    }
 
-        standbyTasks.put(new TaskId(1, 1), Utils.mkSet(new TopicPartition("t1", 1), new TopicPartition("t2", 1)));
-        standbyTasks.put(new TaskId(2, 0), Utils.mkSet(new TopicPartition("t3", 0), new TopicPartition("t3", 0)));
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldThrowForUnknownVersion1() {
+        new AssignmentInfo(0, activeTasks, standbyTasks, activeAssignment, Collections.emptyMap(), 0);
+    }
 
-        AssignmentInfo info = new AssignmentInfo(activeTasks, standbyTasks, new HashMap<HostInfo, Set<TopicPartition>>());
-        AssignmentInfo decoded = AssignmentInfo.decode(info.encode());
-
-        assertEquals(info, decoded);
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldThrowForUnknownVersion2() {
+        new AssignmentInfo(LATEST_SUPPORTED_VERSION + 1, activeTasks, standbyTasks, activeAssignment, Collections.emptyMap(), 0);
     }
 
     @Test
-    public void shouldDecodePreviousVersion() throws Exception {
-        List<TaskId> activeTasks =
-                Arrays.asList(new TaskId(0, 0), new TaskId(0, 0), new TaskId(0, 1), new TaskId(1, 0));
-        Map<TaskId, Set<TopicPartition>> standbyTasks = new HashMap<>();
-
-        standbyTasks.put(new TaskId(1, 1), Utils.mkSet(new TopicPartition("t1", 1), new TopicPartition("t2", 1)));
-        standbyTasks.put(new TaskId(2, 0), Utils.mkSet(new TopicPartition("t3", 0), new TopicPartition("t3", 0)));
-        final AssignmentInfo oldVersion = new AssignmentInfo(1, activeTasks, standbyTasks, null);
-        final AssignmentInfo decoded = AssignmentInfo.decode(encodeV1(oldVersion));
-        assertEquals(oldVersion.activeTasks, decoded.activeTasks);
-        assertEquals(oldVersion.standbyTasks, decoded.standbyTasks);
-        assertEquals(0, decoded.partitionsByHost.size()); // should be empty as wasn't in V1
-        assertEquals(2, decoded.version); // automatically upgraded to v2 on decode;
+    public void shouldEncodeAndDecodeVersion1() {
+        final AssignmentInfo info = new AssignmentInfo(1, activeTasks, standbyTasks, activeAssignment, standbyAssignment, 0);
+        final AssignmentInfo expectedInfo = new AssignmentInfo(1, UNKNOWN, activeTasks, standbyTasks, Collections.emptyMap(), Collections.emptyMap(), 0);
+        assertEquals(expectedInfo, AssignmentInfo.decode(info.encode()));
     }
 
-
-    /**
-     * This is a clone of what the V1 encoding did. The encode method has changed for V2
-     * so it is impossible to test compatibility without having this
-     */
-    private ByteBuffer encodeV1(AssignmentInfo oldVersion) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        DataOutputStream out = new DataOutputStream(baos);
-        // Encode version
-        out.writeInt(oldVersion.version);
-        // Encode active tasks
-        out.writeInt(oldVersion.activeTasks.size());
-        for (TaskId id : oldVersion.activeTasks) {
-            id.writeTo(out);
-        }
-        // Encode standby tasks
-        out.writeInt(oldVersion.standbyTasks.size());
-        for (Map.Entry<TaskId, Set<TopicPartition>> entry : oldVersion.standbyTasks.entrySet()) {
-            TaskId id = entry.getKey();
-            id.writeTo(out);
-
-            Set<TopicPartition> partitions = entry.getValue();
-            out.writeInt(partitions.size());
-            for (TopicPartition partition : partitions) {
-                out.writeUTF(partition.topic());
-                out.writeInt(partition.partition());
-            }
-        }
-
-        out.flush();
-        out.close();
-
-        return ByteBuffer.wrap(baos.toByteArray());
-
+    @Test
+    public void shouldEncodeAndDecodeVersion2() {
+        final AssignmentInfo info = new AssignmentInfo(2, activeTasks, standbyTasks, activeAssignment, standbyAssignment, 0);
+        final AssignmentInfo expectedInfo = new AssignmentInfo(2, UNKNOWN, activeTasks, standbyTasks, activeAssignment, Collections.emptyMap(), 0);
+        assertEquals(expectedInfo, AssignmentInfo.decode(info.encode()));
     }
 
+    @Test
+    public void shouldEncodeAndDecodeVersion3() {
+        final AssignmentInfo info = new AssignmentInfo(3, activeTasks, standbyTasks, activeAssignment, standbyAssignment, 0);
+        final AssignmentInfo expectedInfo = new AssignmentInfo(3, LATEST_SUPPORTED_VERSION, activeTasks, standbyTasks,
+            activeAssignment, Collections.emptyMap(), 0);
+        assertEquals(expectedInfo, AssignmentInfo.decode(info.encode()));
+    }
+
+    @Test
+    public void shouldEncodeAndDecodeVersion4() {
+        final AssignmentInfo info = new AssignmentInfo(4, activeTasks, standbyTasks, activeAssignment, standbyAssignment, 2);
+        final AssignmentInfo expectedInfo = new AssignmentInfo(4, LATEST_SUPPORTED_VERSION, activeTasks, standbyTasks,
+            activeAssignment, Collections.emptyMap(), 2);
+        assertEquals(expectedInfo, AssignmentInfo.decode(info.encode()));
+    }
+
+    @Test
+    public void shouldEncodeAndDecodeVersion5() {
+        final AssignmentInfo info = new AssignmentInfo(5, activeTasks, standbyTasks, activeAssignment, standbyAssignment, 2);
+        final AssignmentInfo expectedInfo = new AssignmentInfo(5, LATEST_SUPPORTED_VERSION, activeTasks, standbyTasks,
+            activeAssignment, Collections.emptyMap(), 2);
+        assertEquals(expectedInfo, AssignmentInfo.decode(info.encode()));
+    }
+
+    @Test
+    public void shouldEncodeAndDecodeVersion6() {
+        final AssignmentInfo info = new AssignmentInfo(6, activeTasks, standbyTasks, activeAssignment, standbyAssignment, 2);
+        final AssignmentInfo expectedInfo = new AssignmentInfo(6, LATEST_SUPPORTED_VERSION, activeTasks, standbyTasks,
+            activeAssignment, standbyAssignment, 2);
+        assertEquals(expectedInfo, AssignmentInfo.decode(info.encode()));
+    }
+
+    @Test
+    public void shouldEncodeAndDecodeSmallerCommonlySupportedVersion() {
+        final int usedVersion = 5;
+        final int commonlySupportedVersion = 5;
+        final AssignmentInfo info = new AssignmentInfo(usedVersion, commonlySupportedVersion, activeTasks, standbyTasks,
+            activeAssignment, standbyAssignment, 2);
+        final AssignmentInfo expectedInfo = new AssignmentInfo(usedVersion, commonlySupportedVersion, activeTasks, standbyTasks,
+            activeAssignment, Collections.emptyMap(), 2);
+        assertEquals(expectedInfo, AssignmentInfo.decode(info.encode()));
+    }
 }

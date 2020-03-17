@@ -17,6 +17,7 @@
 package org.apache.kafka.streams.processor.internals;
 
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.processor.StateRestoreCallback;
 import org.apache.kafka.streams.processor.StateStore;
 
@@ -24,16 +25,27 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Map;
 
-interface StateManager extends Checkpointable {
+
+interface StateManager {
     File baseDir();
 
-    void register(final StateStore store, final boolean loggingEnabled, final StateRestoreCallback stateRestoreCallback);
+    /**
+     * @throws IllegalArgumentException if the store name has already been registered or if it is not a valid name
+     * (e.g., when it conflicts with the names of internal topics, like the checkpoint file name)
+     * @throws StreamsException if the store's change log does not contain the partition
+     */
+    void registerStore(final StateStore store, final StateRestoreCallback stateRestoreCallback);
+
+    StateStore getStore(final String name);
 
     void flush();
 
-    void close(Map<TopicPartition, Long> offsets) throws IOException;
+    void checkpoint(final Map<TopicPartition, Long> offsets);
 
+    Map<TopicPartition, Long> changelogOffsets();
+
+    void close() throws IOException;
+
+    // TODO: we can remove this when consolidating global state manager into processor state manager
     StateStore getGlobalStore(final String name);
-
-    StateStore getStore(final String name);
 }

@@ -16,13 +16,17 @@
  */
 package org.apache.kafka.connect.json;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.HashSet;
+import java.util.Set;
 import org.apache.kafka.common.cache.Cache;
 import org.apache.kafka.common.cache.LRUCache;
 import org.apache.kafka.common.cache.SynchronizedCache;
+import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Schema;
@@ -36,26 +40,30 @@ import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.storage.Converter;
+import org.apache.kafka.connect.storage.ConverterType;
+import org.apache.kafka.connect.storage.HeaderConverter;
+import org.apache.kafka.connect.storage.StringConverterConfig;
 
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 
 /**
- * Implementation of Converter that uses JSON to store schemas and objects.
+ * Implementation of Converter that uses JSON to store schemas and objects. By default this converter will serialize Connect keys, values,
+ * and headers with schemas, although this can be disabled with {@link JsonConverterConfig#SCHEMAS_ENABLE_CONFIG schemas.enable}
+ * configuration option.
+ *
+ * This implementation currently does nothing with the topic names or header names.
  */
-public class JsonConverter implements Converter {
-    private static final String SCHEMAS_ENABLE_CONFIG = "schemas.enable";
-    private static final boolean SCHEMAS_ENABLE_DEFAULT = true;
-    private static final String SCHEMAS_CACHE_SIZE_CONFIG = "schemas.cache.size";
-    private static final int SCHEMAS_CACHE_SIZE_DEFAULT = 1000;
+public class JsonConverter implements Converter, HeaderConverter {
 
-    private static final HashMap<Schema.Type, JsonToConnectTypeConverter> TO_CONNECT_CONVERTERS = new HashMap<>();
+    private static final Map<Schema.Type, JsonToConnectTypeConverter> TO_CONNECT_CONVERTERS = new EnumMap<>(Schema.Type.class);
 
     static {
         TO_CONNECT_CONVERTERS.put(Schema.Type.BOOLEAN, new JsonToConnectTypeConverter() {
@@ -180,114 +188,151 @@ public class JsonConverter implements Converter {
         });
     }
 
-    // Convert values in Kafka Connect form into their logical types. These logical converters are discovered by logical type
+    // Convert values in Kafka Connect form into/from their logical types. These logical converters are discovered by logical type
     // names specified in the field
-    private static final HashMap<String, LogicalTypeConverter> TO_CONNECT_LOGICAL_CONVERTERS = new HashMap<>();
+    private static final HashMap<String, LogicalTypeConverter> LOGICAL_CONVERTERS = new HashMap<>();
     static {
-        TO_CONNECT_LOGICAL_CONVERTERS.put(Decimal.LOGICAL_NAME, new LogicalTypeConverter() {
+        LOGICAL_CONVERTERS.put(Decimal.LOGICAL_NAME, new LogicalTypeConverter() {
             @Override
-            public Object convert(Schema schema, Object value) {
-                if (!(value instanceof byte[]))
-                    throw new DataException("Invalid type for Decimal, underlying representation should be bytes but was " + value.getClass());
-                return Decimal.toLogical(schema, (byte[]) value);
-            }
-        });
-
-        TO_CONNECT_LOGICAL_CONVERTERS.put(Date.LOGICAL_NAME, new LogicalTypeConverter() {
-            @Override
-            public Object convert(Schema schema, Object value) {
-                if (!(value instanceof Integer))
-                    throw new DataException("Invalid type for Date, underlying representation should be int32 but was " + value.getClass());
-                return Date.toLogical(schema, (int) value);
-            }
-        });
-
-        TO_CONNECT_LOGICAL_CONVERTERS.put(Time.LOGICAL_NAME, new LogicalTypeConverter() {
-            @Override
-            public Object convert(Schema schema, Object value) {
-                if (!(value instanceof Integer))
-                    throw new DataException("Invalid type for Time, underlying representation should be int32 but was " + value.getClass());
-                return Time.toLogical(schema, (int) value);
-            }
-        });
-
-        TO_CONNECT_LOGICAL_CONVERTERS.put(Timestamp.LOGICAL_NAME, new LogicalTypeConverter() {
-            @Override
-            public Object convert(Schema schema, Object value) {
-                if (!(value instanceof Long))
-                    throw new DataException("Invalid type for Timestamp, underlying representation should be int64 but was " + value.getClass());
-                return Timestamp.toLogical(schema, (long) value);
-            }
-        });
-    }
-
-    private static final HashMap<String, LogicalTypeConverter> TO_JSON_LOGICAL_CONVERTERS = new HashMap<>();
-    static {
-        TO_JSON_LOGICAL_CONVERTERS.put(Decimal.LOGICAL_NAME, new LogicalTypeConverter() {
-            @Override
-            public Object convert(Schema schema, Object value) {
+            public JsonNode toJson(final Schema schema, final Object value, final JsonConverterConfig config) {
                 if (!(value instanceof BigDecimal))
                     throw new DataException("Invalid type for Decimal, expected BigDecimal but was " + value.getClass());
-                return Decimal.fromLogical(schema, (BigDecimal) value);
+
+                final BigDecimal decimal = (BigDecimal) value;
+                switch (config.decimalFormat()) {
+                    case NUMERIC:
+                        return JsonNodeFactory.instance.numberNode(decimal);
+                    case BASE64:
+                        return JsonNodeFactory.instance.binaryNode(Decimal.fromLogical(schema, decimal));
+                    default:
+                        throw new DataException("Unexpected " + JsonConverterConfig.DECIMAL_FORMAT_CONFIG + ": " + config.decimalFormat());
+                }
+            }
+
+            @Override
+            public Object toConnect(final Schema schema, final JsonNode value) {
+                if (value.isNumber()) return value.decimalValue();
+                if (value.isBinary() || value.isTextual()) {
+                    try {
+                        return Decimal.toLogical(schema, value.binaryValue());
+                    } catch (Exception e) {
+                        throw new DataException("Invalid bytes for Decimal field", e);
+                    }
+                }
+
+                throw new DataException("Invalid type for Decimal, underlying representation should be numeric or bytes but was " + value.getNodeType());
             }
         });
 
-        TO_JSON_LOGICAL_CONVERTERS.put(Date.LOGICAL_NAME, new LogicalTypeConverter() {
+        LOGICAL_CONVERTERS.put(Date.LOGICAL_NAME, new LogicalTypeConverter() {
             @Override
-            public Object convert(Schema schema, Object value) {
+            public JsonNode toJson(final Schema schema, final Object value, final JsonConverterConfig config) {
                 if (!(value instanceof java.util.Date))
                     throw new DataException("Invalid type for Date, expected Date but was " + value.getClass());
-                return Date.fromLogical(schema, (java.util.Date) value);
+                return JsonNodeFactory.instance.numberNode(Date.fromLogical(schema, (java.util.Date) value));
+            }
+
+            @Override
+            public Object toConnect(final Schema schema, final JsonNode value) {
+                if (!(value.isInt()))
+                    throw new DataException("Invalid type for Date, underlying representation should be integer but was " + value.getNodeType());
+                return Date.toLogical(schema, value.intValue());
             }
         });
 
-        TO_JSON_LOGICAL_CONVERTERS.put(Time.LOGICAL_NAME, new LogicalTypeConverter() {
+        LOGICAL_CONVERTERS.put(Time.LOGICAL_NAME, new LogicalTypeConverter() {
             @Override
-            public Object convert(Schema schema, Object value) {
+            public JsonNode toJson(final Schema schema, final Object value, final JsonConverterConfig config) {
                 if (!(value instanceof java.util.Date))
                     throw new DataException("Invalid type for Time, expected Date but was " + value.getClass());
-                return Time.fromLogical(schema, (java.util.Date) value);
+                return JsonNodeFactory.instance.numberNode(Time.fromLogical(schema, (java.util.Date) value));
+            }
+
+            @Override
+            public Object toConnect(final Schema schema, final JsonNode value) {
+                if (!(value.isInt()))
+                    throw new DataException("Invalid type for Time, underlying representation should be integer but was " + value.getNodeType());
+                return Time.toLogical(schema, value.intValue());
             }
         });
 
-        TO_JSON_LOGICAL_CONVERTERS.put(Timestamp.LOGICAL_NAME, new LogicalTypeConverter() {
+        LOGICAL_CONVERTERS.put(Timestamp.LOGICAL_NAME, new LogicalTypeConverter() {
             @Override
-            public Object convert(Schema schema, Object value) {
+            public JsonNode toJson(final Schema schema, final Object value, final JsonConverterConfig config) {
                 if (!(value instanceof java.util.Date))
                     throw new DataException("Invalid type for Timestamp, expected Date but was " + value.getClass());
-                return Timestamp.fromLogical(schema, (java.util.Date) value);
+                return JsonNodeFactory.instance.numberNode(Timestamp.fromLogical(schema, (java.util.Date) value));
+            }
+
+            @Override
+            public Object toConnect(final Schema schema, final JsonNode value) {
+                if (!(value.isIntegralNumber()))
+                    throw new DataException("Invalid type for Timestamp, underlying representation should be integral but was " + value.getNodeType());
+                return Timestamp.toLogical(schema, value.longValue());
             }
         });
     }
 
-
-    private boolean enableSchemas = SCHEMAS_ENABLE_DEFAULT;
-    private int cacheSize = SCHEMAS_CACHE_SIZE_DEFAULT;
+    private JsonConverterConfig config;
     private Cache<Schema, ObjectNode> fromConnectSchemaCache;
     private Cache<JsonNode, Schema> toConnectSchemaCache;
 
     private final JsonSerializer serializer = new JsonSerializer();
-    private final JsonDeserializer deserializer = new JsonDeserializer();
+    private final JsonDeserializer deserializer;
+
+    public JsonConverter() {
+        // this ensures that the JsonDeserializer maintains full precision on
+        // floating point numbers that cannot fit into float64
+        final Set<DeserializationFeature> deserializationFeatures = new HashSet<>();
+        deserializationFeatures.add(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+        deserializer = new JsonDeserializer(deserializationFeatures);
+    }
+
+    @Override
+    public ConfigDef config() {
+        return JsonConverterConfig.configDef();
+    }
+
+    @Override
+    public void configure(Map<String, ?> configs) {
+        config = new JsonConverterConfig(configs);
+
+        serializer.configure(configs, config.type() == ConverterType.KEY);
+        deserializer.configure(configs, config.type() == ConverterType.KEY);
+
+        fromConnectSchemaCache = new SynchronizedCache<>(new LRUCache<>(config.schemaCacheSize()));
+        toConnectSchemaCache = new SynchronizedCache<>(new LRUCache<>(config.schemaCacheSize()));
+    }
 
     @Override
     public void configure(Map<String, ?> configs, boolean isKey) {
-        Object enableConfigsVal = configs.get(SCHEMAS_ENABLE_CONFIG);
-        if (enableConfigsVal != null)
-            enableSchemas = enableConfigsVal.toString().equals("true");
+        Map<String, Object> conf = new HashMap<>(configs);
+        conf.put(StringConverterConfig.TYPE_CONFIG, isKey ? ConverterType.KEY.getName() : ConverterType.VALUE.getName());
+        configure(conf);
+    }
 
-        serializer.configure(configs, isKey);
-        deserializer.configure(configs, isKey);
+    @Override
+    public void close() {
+        // do nothing
+    }
 
-        Object cacheSizeVal = configs.get(SCHEMAS_CACHE_SIZE_CONFIG);
-        if (cacheSizeVal != null)
-            cacheSize = Integer.parseInt((String) cacheSizeVal);
-        fromConnectSchemaCache = new SynchronizedCache<>(new LRUCache<Schema, ObjectNode>(cacheSize));
-        toConnectSchemaCache = new SynchronizedCache<>(new LRUCache<JsonNode, Schema>(cacheSize));
+    @Override
+    public byte[] fromConnectHeader(String topic, String headerKey, Schema schema, Object value) {
+        return fromConnectData(topic, schema, value);
+    }
+
+    @Override
+    public SchemaAndValue toConnectHeader(String topic, String headerKey, byte[] value) {
+        return toConnectData(topic, value);
     }
 
     @Override
     public byte[] fromConnectData(String topic, Schema schema, Object value) {
-        JsonNode jsonValue = enableSchemas ? convertToJsonWithEnvelope(schema, value) : convertToJsonWithoutEnvelope(schema, value);
+        if (schema == null && value == null) {
+            return null;
+        }
+
+        JsonNode jsonValue = config.schemasEnabled() ? convertToJsonWithEnvelope(schema, value) : convertToJsonWithoutEnvelope(schema, value);
         try {
             return serializer.serialize(topic, jsonValue);
         } catch (SerializationException e) {
@@ -298,37 +343,36 @@ public class JsonConverter implements Converter {
     @Override
     public SchemaAndValue toConnectData(String topic, byte[] value) {
         JsonNode jsonValue;
+
+        // This handles a tombstone message
+        if (value == null) {
+            return SchemaAndValue.NULL;
+        }
+
         try {
             jsonValue = deserializer.deserialize(topic, value);
         } catch (SerializationException e) {
             throw new DataException("Converting byte[] to Kafka Connect data failed due to serialization error: ", e);
         }
 
-        if (enableSchemas && (jsonValue == null || !jsonValue.isObject() || jsonValue.size() != 2 || !jsonValue.has("schema") || !jsonValue.has("payload")))
+        if (config.schemasEnabled() && (!jsonValue.isObject() || jsonValue.size() != 2 || !jsonValue.has(JsonSchema.ENVELOPE_SCHEMA_FIELD_NAME) || !jsonValue.has(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME)))
             throw new DataException("JsonConverter with schemas.enable requires \"schema\" and \"payload\" fields and may not contain additional fields." +
                     " If you are trying to deserialize plain JSON data, set schemas.enable=false in your converter configuration.");
 
         // The deserialized data should either be an envelope object containing the schema and the payload or the schema
         // was stripped during serialization and we need to fill in an all-encompassing schema.
-        if (!enableSchemas) {
+        if (!config.schemasEnabled()) {
             ObjectNode envelope = JsonNodeFactory.instance.objectNode();
-            envelope.set("schema", null);
-            envelope.set("payload", jsonValue);
+            envelope.set(JsonSchema.ENVELOPE_SCHEMA_FIELD_NAME, null);
+            envelope.set(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME, jsonValue);
             jsonValue = envelope;
         }
 
-        return jsonToConnect(jsonValue);
-    }
-
-    private SchemaAndValue jsonToConnect(JsonNode jsonValue) {
-        if (jsonValue == null)
-            return SchemaAndValue.NULL;
-
-        if (!jsonValue.isObject() || jsonValue.size() != 2 || !jsonValue.has(JsonSchema.ENVELOPE_SCHEMA_FIELD_NAME) || !jsonValue.has(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME))
-            throw new DataException("JSON value converted to Kafka Connect must be in envelope containing schema");
-
         Schema schema = asConnectSchema(jsonValue.get(JsonSchema.ENVELOPE_SCHEMA_FIELD_NAME));
-        return new SchemaAndValue(schema, convertToConnect(schema, jsonValue.get(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME)));
+        return new SchemaAndValue(
+                schema,
+                convertToConnect(schema, jsonValue.get(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME))
+        );
     }
 
     public ObjectNode asJsonSchema(Schema schema) {
@@ -455,7 +499,7 @@ public class JsonConverter implements Converter {
                 break;
             case JsonSchema.ARRAY_TYPE_NAME:
                 JsonNode elemSchema = jsonSchema.get(JsonSchema.ARRAY_ITEMS_FIELD_NAME);
-                if (elemSchema == null)
+                if (elemSchema == null || elemSchema.isNull())
                     throw new DataException("Array schema did not specify the element type");
                 builder = SchemaBuilder.array(asConnectSchema(elemSchema));
                 break;
@@ -545,8 +589,8 @@ public class JsonConverter implements Converter {
      * Convert this object, in the org.apache.kafka.connect.data format, into a JSON object, returning both the schema
      * and the converted object.
      */
-    private static JsonNode convertToJson(Schema schema, Object logicalValue) {
-        if (logicalValue == null) {
+    private JsonNode convertToJson(Schema schema, Object value) {
+        if (value == null) {
             if (schema == null) // Any schema is valid and we don't have a default, so treat this as an optional schema
                 return null;
             if (schema.defaultValue() != null)
@@ -556,11 +600,10 @@ public class JsonConverter implements Converter {
             throw new DataException("Conversion error: null value for field that is required and has no default value");
         }
 
-        Object value = logicalValue;
         if (schema != null && schema.name() != null) {
-            LogicalTypeConverter logicalConverter = TO_JSON_LOGICAL_CONVERTERS.get(schema.name());
+            LogicalTypeConverter logicalConverter = LOGICAL_CONVERTERS.get(schema.name());
             if (logicalConverter != null)
-                value = logicalConverter.convert(schema, logicalValue);
+                return logicalConverter.toJson(schema, value, config);
         }
 
         try {
@@ -643,7 +686,7 @@ public class JsonConverter implements Converter {
                 }
                 case STRUCT: {
                     Struct struct = (Struct) value;
-                    if (struct.schema() != schema)
+                    if (!struct.schema().equals(schema))
                         throw new DataException("Mismatching schema.");
                     ObjectNode obj = JsonNodeFactory.instance.objectNode();
                     for (Field field : schema.fields()) {
@@ -665,7 +708,7 @@ public class JsonConverter implements Converter {
         final Schema.Type schemaType;
         if (schema != null) {
             schemaType = schema.type();
-            if (jsonValue.isNull()) {
+            if (jsonValue == null || jsonValue.isNull()) {
                 if (schema.defaultValue() != null)
                     return schema.defaultValue(); // any logical type conversions should already have been applied
                 if (schema.isOptional())
@@ -707,15 +750,15 @@ public class JsonConverter implements Converter {
 
         final JsonToConnectTypeConverter typeConverter = TO_CONNECT_CONVERTERS.get(schemaType);
         if (typeConverter == null)
-            throw new DataException("Unknown schema type: " + String.valueOf(schemaType));
+            throw new DataException("Unknown schema type: " + schemaType);
 
-        Object converted = typeConverter.convert(schema, jsonValue);
         if (schema != null && schema.name() != null) {
-            LogicalTypeConverter logicalConverter = TO_CONNECT_LOGICAL_CONVERTERS.get(schema.name());
+            LogicalTypeConverter logicalConverter = LOGICAL_CONVERTERS.get(schema.name());
             if (logicalConverter != null)
-                converted = logicalConverter.convert(schema, converted);
+                return logicalConverter.toConnect(schema, jsonValue);
         }
-        return converted;
+
+        return typeConverter.convert(schema, jsonValue);
     }
 
     private interface JsonToConnectTypeConverter {
@@ -723,6 +766,7 @@ public class JsonConverter implements Converter {
     }
 
     private interface LogicalTypeConverter {
-        Object convert(Schema schema, Object value);
+        JsonNode toJson(Schema schema, Object value, JsonConverterConfig config);
+        Object toConnect(Schema schema, JsonNode value);
     }
 }

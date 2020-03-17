@@ -16,22 +16,14 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.common.serialization.Serde;
-import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.kstream.PrintForeachAction;
-import org.apache.kafka.streams.kstream.KStream;
-import org.apache.kafka.streams.kstream.KStreamBuilder;
-import org.apache.kafka.test.KStreamTestDriver;
-
+import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorContext;
+import org.easymock.EasyMock;
 import org.junit.Before;
-import org.junit.After;
 import org.junit.Test;
 
-import java.io.PrintWriter;
 import java.io.ByteArrayOutputStream;
-import java.io.OutputStreamWriter;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
@@ -40,51 +32,48 @@ import static org.junit.Assert.assertEquals;
 
 public class KStreamPrintTest {
 
-    private final String topicName = "topic";
-    private final Serde<Integer> intSerd = Serdes.Integer();
-    private final Serde<String> stringSerd = Serdes.String();
-    private PrintWriter printWriter;
     private ByteArrayOutputStream byteOutStream;
-    private KStreamTestDriver driver = null;
-
+    private Processor<Integer, String> printProcessor;
 
     @Before
     public void setUp() {
         byteOutStream = new ByteArrayOutputStream();
-        printWriter = new PrintWriter(new OutputStreamWriter(byteOutStream, StandardCharsets.UTF_8));
+
+        final KStreamPrint<Integer, String> kStreamPrint = new KStreamPrint<>(new PrintForeachAction<>(
+            byteOutStream,
+            (key, value) -> String.format("%d, %s", key, value),
+            "test-stream"));
+
+        printProcessor = kStreamPrint.get();
+        final ProcessorContext processorContext = EasyMock.createNiceMock(ProcessorContext.class);
+        EasyMock.replay(processorContext);
+
+        printProcessor.init(processorContext);
     }
 
-    @After
-    public void cleanup() {
-        if (driver != null) {
-            driver.close();
-        }
-    }
-    
     @Test
-    public void testPrintKeyValueWithName() {
-        final KStreamPrint<Integer, String> kStreamPrint = new KStreamPrint<>(new PrintForeachAction(printWriter, "test-stream"), intSerd, stringSerd);
-
+    @SuppressWarnings("unchecked")
+    public void testPrintStreamWithProvidedKeyValueMapper() {
         final List<KeyValue<Integer, String>> inputRecords = Arrays.asList(
                 new KeyValue<>(0, "zero"),
                 new KeyValue<>(1, "one"),
                 new KeyValue<>(2, "two"),
                 new KeyValue<>(3, "three"));
-        
-        final String[] expectedResult = {"[test-stream]: 0, zero", "[test-stream]: 1, one", "[test-stream]: 2, two", "[test-stream]: 3, three"};
-        
-        final KStreamBuilder builder = new KStreamBuilder();
-        final KStream<Integer, String> stream = builder.stream(intSerd, stringSerd, topicName);
-        stream.process(kStreamPrint);
-        
-        driver = new KStreamTestDriver(builder);
-        for (KeyValue<Integer, String> record: inputRecords) {
-            driver.process(topicName, record.key, record.value);
+
+        final String[] expectedResult = {
+            "[test-stream]: 0, zero",
+            "[test-stream]: 1, one",
+            "[test-stream]: 2, two",
+            "[test-stream]: 3, three"};
+
+        for (final KeyValue<Integer, String> record: inputRecords) {
+            printProcessor.process(record.key, record.value);
         }
-        printWriter.flush();
-        final String[] flushOutDatas = new String(byteOutStream.toByteArray(), Charset.forName("UTF-8")).split("\n");
+        printProcessor.close();
+
+        final String[] flushOutDatas = new String(byteOutStream.toByteArray(), StandardCharsets.UTF_8).split("\\r*\\n");
         for (int i = 0; i < flushOutDatas.length; i++) {
-            assertEquals(flushOutDatas[i], expectedResult[i]);
+            assertEquals(expectedResult[i], flushOutDatas[i]);
         }
     }
 

@@ -16,11 +16,13 @@
  */
 package org.apache.kafka.connect.util;
 
-import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.CreateTopicsOptions;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.common.KafkaFuture;
+import org.apache.kafka.common.errors.ClusterAuthorizationException;
+import org.apache.kafka.common.errors.TopicAuthorizationException;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
@@ -37,7 +39,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 
 /**
- * Utility to simplify creating and managing topics via the {@link org.apache.kafka.clients.admin.AdminClient}.
+ * Utility to simplify creating and managing topics via the {@link Admin}.
  */
 public class TopicAdmin implements AutoCloseable {
 
@@ -156,19 +158,19 @@ public class TopicAdmin implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(TopicAdmin.class);
     private final Map<String, Object> adminConfig;
-    private final AdminClient admin;
+    private final Admin admin;
 
     /**
      * Create a new topic admin component with the given configuration.
      *
-     * @param adminConfig the configuration for the {@link AdminClient}
+     * @param adminConfig the configuration for the {@link Admin}
      */
     public TopicAdmin(Map<String, Object> adminConfig) {
-        this(adminConfig, AdminClient.create(adminConfig));
+        this(adminConfig, Admin.create(adminConfig));
     }
 
     // visible for testing
-    TopicAdmin(Map<String, Object> adminConfig, AdminClient adminClient) {
+    TopicAdmin(Map<String, Object> adminConfig, Admin adminClient) {
         this.admin = adminClient;
         this.adminConfig = adminConfig != null ? adminConfig : Collections.<String, Object>emptyMap();
     }
@@ -195,13 +197,14 @@ public class TopicAdmin implements AutoCloseable {
      * are excluded from the result.
      * <p>
      * If multiple topic definitions have the same topic name, the last one with that name will be used.
-     * </p>
+     * <p>
+     * Apache Kafka added support for creating topics in 0.10.1.0, so this method works as expected with that and later versions.
+     * With brokers older than 0.10.1.0, this method is unable to create topics and always returns an empty set.
      *
      * @param topics the specifications of the topics
      * @return the names of the topics that were created by this operation; never null but possibly empty
      * @throws ConnectException            if an error occurs, the operation takes too long, or the thread is interrupted while
      *                                     attempting to perform this operation
-     * @throws UnsupportedVersionException if the broker does not support the necessary APIs to perform this request
      */
     public Set<String> createTopics(NewTopic... topics) {
         Map<String, NewTopic> topicsByName = new HashMap<>();
@@ -228,13 +231,27 @@ public class TopicAdmin implements AutoCloseable {
                 newlyCreatedTopicNames.add(topic);
             } catch (ExecutionException e) {
                 Throwable cause = e.getCause();
-                if (e.getCause() instanceof TopicExistsException) {
+                if (cause instanceof TopicExistsException) {
                     log.debug("Found existing topic '{}' on the brokers at {}", topic, bootstrapServers);
                     continue;
                 }
                 if (cause instanceof UnsupportedVersionException) {
-                    log.error("Unable to use Kafka admin client to create topic descriptions for '{}' using the brokers at {}", topicNameList, bootstrapServers);
-                    throw (UnsupportedVersionException) cause;
+                    log.debug("Unable to create topic(s) '{}' since the brokers at {} do not support the CreateTopics API.",
+                            " Falling back to assume topic(s) exist or will be auto-created by the broker.",
+                            topicNameList, bootstrapServers);
+                    return Collections.emptySet();
+                }
+                if (cause instanceof ClusterAuthorizationException) {
+                    log.debug("Not authorized to create topic(s) '{}'." +
+                            " Falling back to assume topic(s) exist or will be auto-created by the broker.",
+                            topicNameList, bootstrapServers);
+                    return Collections.emptySet();
+                }
+                if (cause instanceof TopicAuthorizationException) {
+                    log.debug("Not authorized to create topic(s) '{}'." +
+                                    " Falling back to assume topic(s) exist or will be auto-created by the broker.",
+                            topicNameList, bootstrapServers);
+                    return Collections.emptySet();
                 }
                 if (cause instanceof TimeoutException) {
                     // Timed out waiting for the operation to complete

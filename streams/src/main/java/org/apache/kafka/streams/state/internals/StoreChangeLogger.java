@@ -25,39 +25,47 @@ import org.apache.kafka.streams.state.StateSerdes;
 /**
  * Note that the use of array-typed keys is discouraged because they result in incorrect caching behavior.
  * If you intend to work on byte arrays as key, for example, you may want to wrap them with the {@code Bytes} class,
- * i.e. use {@code RocksDBStore<Bytes, ...>} rather than {@code RocksDBStore<byte[], ...>}.
+ * i.e. use {@code StoreChangeLogger<Bytes, ...>} rather than {@code StoreChangeLogger<byte[], ...>}.
  *
  * @param <K>
  * @param <V>
  */
 class StoreChangeLogger<K, V> {
 
-    protected final StateSerdes<K, V> serialization;
-
     private final String topic;
     private final int partition;
     private final ProcessorContext context;
     private final RecordCollector collector;
+    private final Serializer<K> keySerializer;
+    private final Serializer<V> valueSerializer;
 
-
-    StoreChangeLogger(String storeName, ProcessorContext context, StateSerdes<K, V> serialization) {
+    StoreChangeLogger(final String storeName,
+                      final ProcessorContext context,
+                      final StateSerdes<K, V> serialization) {
         this(storeName, context, context.taskId().partition, serialization);
     }
 
-    private StoreChangeLogger(String storeName, ProcessorContext context, int partition, StateSerdes<K, V> serialization) {
-        this.topic = ProcessorStateManager.storeChangelogTopic(context.applicationId(), storeName);
+    private StoreChangeLogger(final String storeName,
+                              final ProcessorContext context,
+                              final int partition,
+                              final StateSerdes<K, V> serialization) {
+        topic = ProcessorStateManager.storeChangelogTopic(context.applicationId(), storeName);
         this.context = context;
         this.partition = partition;
-        this.serialization = serialization;
         this.collector = ((RecordCollector.Supplier) context).recordCollector();
+        keySerializer = serialization.keySerializer();
+        valueSerializer = serialization.valueSerializer();
     }
 
-    void logChange(final K key, final V value) {
-        if (collector != null) {
-            final Serializer<K> keySerializer = serialization.keySerializer();
-            final Serializer<V> valueSerializer = serialization.valueSerializer();
-            collector.send(this.topic, key, value, this.partition, context.timestamp(), keySerializer, valueSerializer);
-        }
+    void logChange(final K key,
+                   final V value) {
+        logChange(key, value, context.timestamp());
     }
 
+    void logChange(final K key,
+                   final V value,
+                   final long timestamp) {
+        // Sending null headers to changelog topics (KIP-244)
+        collector.send(topic, key, value, null, partition, timestamp, keySerializer, valueSerializer);
+    }
 }

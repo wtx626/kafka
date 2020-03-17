@@ -17,74 +17,68 @@
 package org.apache.kafka.streams.state.internals;
 
 
-import org.apache.kafka.common.serialization.Serializer;
-import org.apache.kafka.streams.processor.StreamPartitioner;
-import org.apache.kafka.streams.processor.internals.RecordCollectorImpl;
+import org.apache.kafka.common.header.internals.RecordHeader;
+import org.apache.kafka.common.record.Record;
 import org.apache.kafka.streams.state.StateSerdes;
-import org.apache.kafka.test.MockProcessorContext;
-import org.junit.After;
+import org.apache.kafka.test.InternalMockProcessorContext;
+import org.apache.kafka.test.MockRecordCollector;
 import org.junit.Test;
 
-import java.util.HashMap;
-import java.util.Map;
+import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.MatcherAssert.assertThat;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
 
 public class StoreChangeLoggerTest {
 
     private final String topic = "topic";
 
-    private final Map<Integer, String> logged = new HashMap<>();
+    private final MockRecordCollector collector = new MockRecordCollector();
+    private final InternalMockProcessorContext context = new InternalMockProcessorContext(
+        StateSerdes.withBuiltinTypes(topic, Integer.class, String.class),
+        collector);
 
-    private final MockProcessorContext context = new MockProcessorContext(StateSerdes.withBuiltinTypes(topic, Integer.class, String.class),
-            new RecordCollectorImpl(null, "StoreChangeLoggerTest") {
-                @SuppressWarnings("unchecked")
-                @Override
-                public <K1, V1> void send(final String topic,
-                                          final K1 key,
-                                          final V1 value,
-                                          final Integer partition,
-                                          final Long timestamp,
-                                          final Serializer<K1> keySerializer,
-                                          final Serializer<V1> valueSerializer) {
-                    logged.put((Integer) key, (String) value);
-                }
+    private final StoreChangeLogger<Integer, String> changeLogger =
+        new StoreChangeLogger<>(topic, context, StateSerdes.withBuiltinTypes(topic, Integer.class, String.class));
 
-                @Override
-                public <K1, V1> void send(final String topic,
-                                          final K1 key,
-                                          final V1 value,
-                                          final Long timestamp,
-                                          final Serializer<K1> keySerializer,
-                                          final Serializer<V1> valueSerializer,
-                                          final StreamPartitioner<? super K1, ? super V1> partitioner) {
-                    throw new UnsupportedOperationException();
-                }
-            }
-    );
-
-    private final StoreChangeLogger<Integer, String> changeLogger = new StoreChangeLogger<>(topic, context, StateSerdes.withBuiltinTypes(topic, Integer.class, String.class));
-
-    @After
-    public void after() {
-        context.close();
-    }
-
-    @SuppressWarnings("unchecked")
     @Test
-    public void testAddRemove() throws Exception {
+    public void testAddRemove() {
         context.setTime(1);
         changeLogger.logChange(0, "zero");
+        context.setTime(5);
         changeLogger.logChange(1, "one");
         changeLogger.logChange(2, "two");
-
-        assertEquals("zero", logged.get(0));
-        assertEquals("one", logged.get(1));
-        assertEquals("two", logged.get(2));
-
+        changeLogger.logChange(3, "three", 42L);
+        context.setTime(9);
         changeLogger.logChange(0, null);
-        assertNull(logged.get(0));
 
+        assertThat(collector.collected().size(), equalTo(5));
+        assertThat(collector.collected().get(0).key(), equalTo(0));
+        assertThat(collector.collected().get(0).value(), equalTo("zero"));
+        assertThat(collector.collected().get(0).timestamp(), equalTo(1L));
+        assertThat(collector.collected().get(1).key(), equalTo(1));
+        assertThat(collector.collected().get(1).value(), equalTo("one"));
+        assertThat(collector.collected().get(1).timestamp(), equalTo(5L));
+        assertThat(collector.collected().get(2).key(), equalTo(2));
+        assertThat(collector.collected().get(2).value(), equalTo("two"));
+        assertThat(collector.collected().get(2).timestamp(), equalTo(5L));
+        assertThat(collector.collected().get(3).key(), equalTo(3));
+        assertThat(collector.collected().get(3).value(), equalTo("three"));
+        assertThat(collector.collected().get(3).timestamp(), equalTo(42L));
+        assertThat(collector.collected().get(4).key(), equalTo(0));
+        assertThat(collector.collected().get(4).value(), nullValue());
+        assertThat(collector.collected().get(4).timestamp(), equalTo(9L));
+    }
+
+    @Test
+    public void shouldNotSendRecordHeadersToChangelogTopic() {
+        context.headers().add(new RecordHeader("key", "value".getBytes()));
+        changeLogger.logChange(0, "zero", 42L);
+
+        assertThat(collector.collected().size(), equalTo(1));
+        assertThat(collector.collected().get(0).key(), equalTo(0));
+        assertThat(collector.collected().get(0).value(), equalTo("zero"));
+        assertThat(collector.collected().get(0).timestamp(), equalTo(42L));
+        assertThat(collector.collected().get(0).headers().toArray(), equalTo(Record.EMPTY_HEADERS));
     }
 }

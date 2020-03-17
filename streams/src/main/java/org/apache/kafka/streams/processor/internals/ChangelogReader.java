@@ -18,35 +18,46 @@ package org.apache.kafka.streams.processor.internals;
 
 import org.apache.kafka.common.TopicPartition;
 
-import java.util.Map;
+import java.util.Collection;
+import java.util.Set;
 
 /**
- * Performs bulk read operations from a set of partitions. Used to
- * restore  {@link org.apache.kafka.streams.processor.StateStore}s from their
- * change logs
+ * See {@link StoreChangelogReader}.
  */
-public interface ChangelogReader {
+public interface ChangelogReader extends ChangelogRegister {
     /**
-     * Validate that the partition exists on the cluster.
-     * @param topicPartition    partition to validate.
-     * @param storeName         name of the store the partition is for.
-     * @throws org.apache.kafka.streams.errors.StreamsException if partition doesn't exist
-     */
-    void validatePartitionExists(final TopicPartition topicPartition, final String storeName);
-
-    /**
-     * Register a state store and it's partition for later restoration.
-     * @param restorationInfo
-     */
-    void register(final StateRestorer restorationInfo);
-
-    /**
-     * Restore all registered state stores by reading from their changelogs.
+     * Restore all registered state stores by reading from their changelogs
      */
     void restore();
 
     /**
-     * @return the restored offsets for all persistent stores.
+     * Transit to restore active changelogs mode
      */
-    Map<TopicPartition, Long> restoredOffsets();
+    void transitToRestoreActive();
+
+    /**
+     * Transit to update standby changelogs mode
+     */
+    void transitToUpdateStandby();
+
+    /**
+     * @return the changelog partitions that have been completed restoring
+     */
+    Set<TopicPartition> completedChangelogs();
+
+    /**
+     * Removes the passed in partitions from the set of changelogs
+     * @param revokedPartitions the set of partitions to remove
+     */
+    void remove(Collection<TopicPartition> revokedPartitions);
+
+    /**
+     * Clear all partitions
+     */
+    void clear();
+
+    /**
+     * @return whether the changelog reader has just been cleared or is uninitialized
+     */
+    boolean isEmpty();
 }

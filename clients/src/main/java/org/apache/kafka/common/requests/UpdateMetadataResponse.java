@@ -16,43 +16,41 @@
  */
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.message.UpdateMetadataResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
+import java.util.Map;
 
 public class UpdateMetadataResponse extends AbstractResponse {
 
-    private static final String ERROR_CODE_KEY_NAME = "error_code";
+    private final UpdateMetadataResponseData data;
 
-    /**
-     * Possible error code:
-     *
-     * STALE_CONTROLLER_EPOCH (11)
-     */
-    private final Errors error;
-
-    public UpdateMetadataResponse(Errors error) {
-        this.error = error;
+    public UpdateMetadataResponse(UpdateMetadataResponseData data) {
+        this.data = data;
     }
 
-    public UpdateMetadataResponse(Struct struct) {
-        error = Errors.forCode(struct.getShort(ERROR_CODE_KEY_NAME));
+    public UpdateMetadataResponse(Struct struct, short version) {
+        this(new UpdateMetadataResponseData(struct, version));
     }
 
     public Errors error() {
-        return error;
+        return Errors.forCode(data.errorCode());
+    }
+
+    @Override
+    public Map<Errors, Integer> errorCounts() {
+        return errorCounts(error());
     }
 
     public static UpdateMetadataResponse parse(ByteBuffer buffer, short version) {
-        return new UpdateMetadataResponse(ApiKeys.UPDATE_METADATA_KEY.parseResponse(version, buffer));
+        return new UpdateMetadataResponse(ApiKeys.UPDATE_METADATA.parseResponse(version, buffer), version);
     }
 
     @Override
     protected Struct toStruct(short version) {
-        Struct struct = new Struct(ApiKeys.UPDATE_METADATA_KEY.responseSchema(version));
-        struct.set(ERROR_CODE_KEY_NAME, error.code());
-        return struct;
+        return data.toStruct(version);
     }
 }

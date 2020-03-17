@@ -16,203 +16,104 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import org.apache.kafka.clients.consumer.Consumer;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.errors.AuthorizationException;
-import org.apache.kafka.common.errors.WakeupException;
-import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.errors.ProcessorStateException;
-import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
-import org.apache.kafka.streams.state.internals.ThreadCache;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Map;
 import java.util.Set;
+import org.slf4j.Logger;
 
-public abstract class AbstractTask {
-    private static final Logger log = LoggerFactory.getLogger(AbstractTask.class);
+import static org.apache.kafka.streams.processor.internals.Task.State.CLOSED;
+import static org.apache.kafka.streams.processor.internals.Task.State.CREATED;
 
-    final TaskId id;
-    final String applicationId;
-    final ProcessorTopology topology;
-    final Consumer consumer;
-    final ProcessorStateManager stateMgr;
-    final Set<TopicPartition> partitions;
-    InternalProcessorContext processorContext;
-    private final ThreadCache cache;
-    final String logPrefix;
-    final boolean eosEnabled;
+public abstract class AbstractTask implements Task {
+    private Task.State state = CREATED;
 
-    /**
-     * @throws ProcessorStateException if the state manager cannot be created
-     */
+    protected final TaskId id;
+    protected final ProcessorTopology topology;
+    protected final StateDirectory stateDirectory;
+    protected final Set<TopicPartition> partitions;
+    protected final ProcessorStateManager stateMgr;
+
     AbstractTask(final TaskId id,
-                 final String applicationId,
-                 final Collection<TopicPartition> partitions,
                  final ProcessorTopology topology,
-                 final Consumer<byte[], byte[]> consumer,
-                 final ChangelogReader changelogReader,
-                 final boolean isStandby,
                  final StateDirectory stateDirectory,
-                 final ThreadCache cache,
-                 final StreamsConfig config) {
+                 final ProcessorStateManager stateMgr,
+                 final Set<TopicPartition> partitions) {
         this.id = id;
-        this.applicationId = applicationId;
-        this.partitions = new HashSet<>(partitions);
+        this.stateMgr = stateMgr;
         this.topology = topology;
-        this.consumer = consumer;
-        this.cache = cache;
-        eosEnabled = StreamsConfig.EXACTLY_ONCE.equals(config.getString(StreamsConfig.PROCESSING_GUARANTEE_CONFIG));
-
-        logPrefix = String.format("%s [%s]", isStandby ? "standby-task" : "task", id());
-
-        // create the processor state manager
-        try {
-            stateMgr = new ProcessorStateManager(
-                id,
-                partitions,
-                isStandby,
-                stateDirectory,
-                topology.storeToChangelogTopic(),
-                changelogReader,
-                eosEnabled);
-        } catch (final IOException e) {
-            throw new ProcessorStateException(String.format("%s Error while creating the state manager", logPrefix), e);
-        }
+        this.partitions = partitions;
+        this.stateDirectory = stateDirectory;
     }
 
-    public abstract void resume();
-
-    public abstract void commit();
-    public abstract void suspend();
-    public abstract void close(final boolean clean);
-
-    public final TaskId id() {
+    @Override
+    public TaskId id() {
         return id;
     }
 
-    public final String applicationId() {
-        return applicationId;
-    }
-
-    public final Set<TopicPartition> partitions() {
+    @Override
+    public Set<TopicPartition> inputPartitions() {
         return partitions;
     }
 
-    public final ProcessorTopology topology() {
-        return topology;
+    @Override
+    public Collection<TopicPartition> changelogPartitions() {
+        return stateMgr.changelogPartitions();
     }
 
-    public final ProcessorContext context() {
-        return processorContext;
+    @Override
+    public void markChangelogAsCorrupted(final Collection<TopicPartition> partitions) {
+        stateMgr.markChangelogAsCorrupted(partitions);
     }
 
-    public final ThreadCache cache() {
-        return cache;
-    }
-
+    @Override
     public StateStore getStore(final String name) {
         return stateMgr.getStore(name);
     }
 
-    /**
-     * Produces a string representation containing useful information about a StreamTask.
-     * This is useful in debugging scenarios.
-     * @return A string representation of the StreamTask instance.
-     */
     @Override
-    public String toString() {
-        return toString("");
+    public boolean isClosed() {
+        return state() == State.CLOSED;
     }
 
-    /**
-     * Produces a string representation containing useful information about a StreamTask starting with the given indent.
-     * This is useful in debugging scenarios.
-     * @return A string representation of the StreamTask instance.
-     */
-    public String toString(final String indent) {
-        final StringBuilder sb = new StringBuilder();
-        sb.append(indent);
-        sb.append("StreamsTask taskId: ");
-        sb.append(id);
-        sb.append("\n");
+    @Override
+    public final Task.State state() {
+        return state;
+    }
 
-        // print topology
-        if (topology != null) {
-            sb.append(indent).append(topology.toString(indent + "\t"));
+    @Override
+    public void revive() {
+        if (state == CLOSED) {
+            transitionTo(CREATED);
+        } else {
+            throw new IllegalStateException("Illegal state " + state() + " while reviving task " + id);
         }
+    }
 
-        // print assigned partitions
-        if (partitions != null && !partitions.isEmpty()) {
-            sb.append(indent).append("Partitions [");
-            for (final TopicPartition topicPartition : partitions) {
-                sb.append(topicPartition.toString()).append(", ");
-            }
-            sb.setLength(sb.length() - 2);
-            sb.append("]\n");
+    final void transitionTo(final Task.State newState) {
+        final State oldState = state();
+
+        if (oldState.isValidTransition(newState)) {
+            state = newState;
+        } else {
+            throw new IllegalStateException("Invalid transition from " + oldState + " to " + newState);
         }
-        return sb.toString();
     }
 
-    protected Map<TopicPartition, Long> recordCollectorOffsets() {
-        return Collections.emptyMap();
-    }
-
-    protected void updateOffsetLimits() {
-        for (final TopicPartition partition : partitions) {
-            try {
-                final OffsetAndMetadata metadata = consumer.committed(partition); // TODO: batch API?
-                final long offset = metadata != null ? metadata.offset() : 0L;
-                stateMgr.putOffsetLimit(partition, offset);
-
-                if (log.isTraceEnabled()) {
-                    log.trace("{} Updating store offset limits {} for changelog {}", logPrefix, offset, partition);
-                }
-            } catch (final AuthorizationException e) {
-                throw new ProcessorStateException(String.format("task [%s] AuthorizationException when initializing offsets for %s", id, partition), e);
-            } catch (final WakeupException e) {
+    static void executeAndMaybeSwallow(final boolean clean,
+                                       final Runnable runnable,
+                                       final String name,
+                                       final Logger log) {
+        try {
+            runnable.run();
+        } catch (final RuntimeException e) {
+            if (clean) {
                 throw e;
-            } catch (final KafkaException e) {
-                throw new ProcessorStateException(String.format("task [%s] Failed to initialize offsets for %s", id, partition), e);
+            } else {
+                log.debug("Ignoring error in unclean {}", name);
             }
         }
     }
-
-    /**
-     * Flush all state stores owned by this task
-     */
-    void flushState() {
-        stateMgr.flush();
-    }
-
-    void initializeStateStores() {
-        log.trace("{} Initializing state stores", logPrefix);
-
-        // set initial offset limits
-        updateOffsetLimits();
-
-        for (final StateStore store : topology.stateStores()) {
-            log.trace("{} Initializing store {}", logPrefix, store.name());
-            store.init(processorContext, store);
-        }
-    }
-
-    /**
-     * @throws ProcessorStateException if there is an error while closing the state manager
-     * @param writeCheckpoint boolean indicating if a checkpoint file should be written
-     */
-    void closeStateManager(final boolean writeCheckpoint) throws ProcessorStateException {
-        log.trace("{} Closing state manager", logPrefix);
-        stateMgr.close(writeCheckpoint ? recordCollectorOffsets() : null);
-    }
-
 }

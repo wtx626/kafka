@@ -16,296 +16,525 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.common.serialization.Serde;
+import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.serialization.Serdes;
-import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.common.utils.Bytes;
+import org.apache.kafka.streams.KeyValue;
+import org.apache.kafka.streams.KeyValueTimestamp;
+import org.apache.kafka.streams.StreamsBuilder;
+import org.apache.kafka.streams.TestOutputTopic;
+import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.TopologyTestDriver;
+import org.apache.kafka.streams.kstream.Consumed;
+import org.apache.kafka.streams.kstream.Grouped;
 import org.apache.kafka.streams.kstream.KStream;
-import org.apache.kafka.streams.kstream.KStreamBuilder;
 import org.apache.kafka.streams.kstream.KTable;
+import org.apache.kafka.streams.kstream.Materialized;
 import org.apache.kafka.streams.kstream.TimeWindows;
-import org.apache.kafka.streams.kstream.ValueJoiner;
 import org.apache.kafka.streams.kstream.Windowed;
-import org.apache.kafka.streams.processor.internals.ProcessorRecordContext;
-import org.apache.kafka.test.KStreamTestDriver;
+import org.apache.kafka.streams.processor.internals.testutil.LogCaptureAppender;
+import org.apache.kafka.streams.state.WindowStore;
+import org.apache.kafka.streams.TestInputTopic;
+import org.apache.kafka.streams.test.TestRecord;
 import org.apache.kafka.test.MockAggregator;
 import org.apache.kafka.test.MockInitializer;
-import org.apache.kafka.test.MockProcessorContext;
+import org.apache.kafka.test.MockProcessor;
 import org.apache.kafka.test.MockProcessorSupplier;
-import org.apache.kafka.test.TestUtils;
-import org.junit.After;
-import org.junit.Before;
+import org.apache.kafka.test.StreamsTestUtils;
+import org.hamcrest.Matcher;
 import org.junit.Test;
 
-import java.io.File;
-import java.io.IOException;
+import java.util.List;
+import java.util.Properties;
 
+import static java.time.Duration.ofMillis;
+import static java.util.Arrays.asList;
+import static org.apache.kafka.common.utils.Utils.mkEntry;
+import static org.apache.kafka.common.utils.Utils.mkMap;
+import static org.apache.kafka.test.StreamsTestUtils.getMetricByName;
+import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.hasItem;
+import static org.hamcrest.CoreMatchers.hasItems;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.not;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class KStreamWindowAggregateTest {
+    private final Properties props = StreamsTestUtils.getStreamsConfig(Serdes.String(), Serdes.String());
+    private final String threadId = Thread.currentThread().getName();
 
-    final private Serde<String> strSerde = Serdes.String();
+    @Test
+    public void testAggBasic() {
+        final StreamsBuilder builder = new StreamsBuilder();
+        final String topic1 = "topic1";
 
-    private KStreamTestDriver driver = null;
-    private File stateDir = null;
+        final KTable<Windowed<String>, String> table2 = builder
+            .stream(topic1, Consumed.with(Serdes.String(), Serdes.String()))
+            .groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
+            .windowedBy(TimeWindows.of(ofMillis(10)).advanceBy(ofMillis(5)))
+            .aggregate(MockInitializer.STRING_INIT, MockAggregator.TOSTRING_ADDER, Materialized.<String, String, WindowStore<Bytes, byte[]>>as("topic1-Canonized").withValueSerde(Serdes.String()));
 
-    @Before
-    public void setUp() throws IOException {
-        stateDir = TestUtils.tempDirectory("kafka-test");
-    }
+        final MockProcessorSupplier<Windowed<String>, String> supplier = new MockProcessorSupplier<>();
+        table2.toStream().process(supplier);
 
-    @After
-    public void tearDown() throws Exception {
-        if (driver != null) {
-            driver.close();
-            driver = null;
+        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), props)) {
+            final TestInputTopic<String, String> inputTopic1 =
+                    driver.createInputTopic(topic1, new StringSerializer(), new StringSerializer());
+            inputTopic1.pipeInput("A", "1", 0L);
+            inputTopic1.pipeInput("B", "2", 1L);
+            inputTopic1.pipeInput("C", "3", 2L);
+            inputTopic1.pipeInput("D", "4", 3L);
+            inputTopic1.pipeInput("A", "1", 4L);
+
+            inputTopic1.pipeInput("A", "1", 5L);
+            inputTopic1.pipeInput("B", "2", 6L);
+            inputTopic1.pipeInput("D", "4", 7L);
+            inputTopic1.pipeInput("B", "2", 8L);
+            inputTopic1.pipeInput("C", "3", 9L);
+
+            inputTopic1.pipeInput("A", "1", 10L);
+            inputTopic1.pipeInput("B", "2", 11L);
+            inputTopic1.pipeInput("D", "4", 12L);
+            inputTopic1.pipeInput("B", "2", 13L);
+            inputTopic1.pipeInput("C", "3", 14L);
+
+            inputTopic1.pipeInput("B", "1", 3L);
+            inputTopic1.pipeInput("B", "2", 2L);
+            inputTopic1.pipeInput("B", "3", 9L);
         }
-        Utils.delete(stateDir);
+
+        assertEquals(
+            asList(
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)), "0+1", 0),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)), "0+2", 1),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(0, 10)), "0+3", 2),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(0, 10)), "0+4", 3),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)), "0+1+1", 4),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)),  "0+1+1+1",  5),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(5, 15)),  "0+1",  5),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2+2",  6),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(5, 15)),  "0+2",  6),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(0, 10)),  "0+4+4",  7),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(5, 15)),  "0+4",  7),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2+2+2",  8),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(5, 15)),  "0+2+2",  8),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(0, 10)),  "0+3+3",  9),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(5, 15)),  "0+3",  9),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(5, 15)),  "0+1+1",  10),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(10, 20)),  "0+1",  10),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(5, 15)),  "0+2+2+2",  11),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(10, 20)),  "0+2",  11),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(5, 15)),  "0+4+4",  12),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(10, 20)),  "0+4",  12),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(5, 15)),  "0+2+2+2+2",  13),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(10, 20)),  "0+2+2",  13),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(5, 15)),  "0+3+3",  14),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(10, 20)),  "0+3",  14),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2+2+2+1",  8),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2+2+2+1+2",  8),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2+2+2+1+2+3",  9),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(5, 15)),  "0+2+2+2+2+3",  13)
+
+                ),
+            supplier.theCapturedProcessor().processed
+        );
     }
 
     @Test
-    public void testAggBasic() throws Exception {
-        final KStreamBuilder builder = new KStreamBuilder();
-        String topic1 = "topic1";
+    public void testJoin() {
+        final StreamsBuilder builder = new StreamsBuilder();
+        final String topic1 = "topic1";
+        final String topic2 = "topic2";
 
-        KStream<String, String> stream1 = builder.stream(strSerde, strSerde, topic1);
-        KTable<Windowed<String>, String> table2 =
-            stream1.groupByKey(strSerde,
-                               strSerde)
-                .aggregate(MockInitializer.STRING_INIT,
-                           MockAggregator.TOSTRING_ADDER,
-                           TimeWindows.of(10).advanceBy(5),
-                           strSerde, "topic1-Canonized");
+        final KTable<Windowed<String>, String> table1 = builder
+            .stream(topic1, Consumed.with(Serdes.String(), Serdes.String()))
+            .groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
+            .windowedBy(TimeWindows.of(ofMillis(10)).advanceBy(ofMillis(5)))
+            .aggregate(MockInitializer.STRING_INIT, MockAggregator.TOSTRING_ADDER, Materialized.<String, String, WindowStore<Bytes, byte[]>>as("topic1-Canonized").withValueSerde(Serdes.String()));
 
-        MockProcessorSupplier<Windowed<String>, String> proc2 = new MockProcessorSupplier<>();
-        table2.toStream().process(proc2);
+        final MockProcessorSupplier<Windowed<String>, String> supplier = new MockProcessorSupplier<>();
+        table1.toStream().process(supplier);
 
-        driver = new KStreamTestDriver(builder, stateDir);
+        final KTable<Windowed<String>, String> table2 = builder
+            .stream(topic2, Consumed.with(Serdes.String(), Serdes.String()))
+            .groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
+            .windowedBy(TimeWindows.of(ofMillis(10)).advanceBy(ofMillis(5)))
+            .aggregate(MockInitializer.STRING_INIT, MockAggregator.TOSTRING_ADDER, Materialized.<String, String, WindowStore<Bytes, byte[]>>as("topic2-Canonized").withValueSerde(Serdes.String()));
+        table2.toStream().process(supplier);
 
-        setRecordContext(0, topic1);
-        driver.process(topic1, "A", "1");
-        driver.flushState();
-        setRecordContext(1, topic1);
-        driver.process(topic1, "B", "2");
-        driver.flushState();
-        setRecordContext(2, topic1);
-        driver.process(topic1, "C", "3");
-        driver.flushState();
-        setRecordContext(3, topic1);
-        driver.process(topic1, "D", "4");
-        driver.flushState();
-        setRecordContext(4, topic1);
-        driver.process(topic1, "A", "1");
-        driver.flushState();
+        table1.join(table2, (p1, p2) -> p1 + "%" + p2).toStream().process(supplier);
 
-        setRecordContext(5, topic1);
-        driver.process(topic1, "A", "1");
-        driver.flushState();
-        setRecordContext(6, topic1);
-        driver.process(topic1, "B", "2");
-        driver.flushState();
-        setRecordContext(7, topic1);
-        driver.process(topic1, "D", "4");
-        driver.flushState();
-        setRecordContext(8, topic1);
-        driver.process(topic1, "B", "2");
-        driver.flushState();
-        setRecordContext(9, topic1);
-        driver.process(topic1, "C", "3");
-        driver.flushState();
-        setRecordContext(10, topic1);
-        driver.process(topic1, "A", "1");
-        driver.flushState();
-        setRecordContext(11, topic1);
-        driver.process(topic1, "B", "2");
-        driver.flushState();
-        setRecordContext(12, topic1);
-        driver.flushState();
-        driver.process(topic1, "D", "4");
-        driver.flushState();
-        setRecordContext(13, topic1);
-        driver.process(topic1, "B", "2");
-        driver.flushState();
-        setRecordContext(14, topic1);
-        driver.process(topic1, "C", "3");
-        driver.flushState();
+        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), props)) {
+            final TestInputTopic<String, String> inputTopic1 =
+                    driver.createInputTopic(topic1, new StringSerializer(), new StringSerializer());
+            final TestInputTopic<String, String> inputTopic2 =
+                    driver.createInputTopic(topic2, new StringSerializer(), new StringSerializer());
+            inputTopic1.pipeInput("A", "1", 0L);
+            inputTopic1.pipeInput("B", "2", 1L);
+            inputTopic1.pipeInput("C", "3", 2L);
+            inputTopic1.pipeInput("D", "4", 3L);
+            inputTopic1.pipeInput("A", "1", 9L);
 
+            final List<MockProcessor<Windowed<String>, String>> processors = supplier.capturedProcessors(3);
 
-        assertEquals(Utils.mkList(
-                "[A@0/10]:0+1",
-                "[B@0/10]:0+2",
-                "[C@0/10]:0+3",
-                "[D@0/10]:0+4",
-                "[A@0/10]:0+1+1",
+            processors.get(0).checkAndClearProcessResult(
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)),  "0+1",  0),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2",  1),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(0, 10)),  "0+3",  2),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(0, 10)),  "0+4",  3),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)),  "0+1+1",  9),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(5, 15)),  "0+1",  9)
+            );
+            processors.get(1).checkAndClearProcessResult(new KeyValueTimestamp[0]);
+            processors.get(2).checkAndClearProcessResult(new KeyValueTimestamp[0]);
 
-                "[A@0/10]:0+1+1+1", "[A@5/15]:0+1",
-                "[B@0/10]:0+2+2",   "[B@5/15]:0+2",
-                "[D@0/10]:0+4+4",   "[D@5/15]:0+4",
-                "[B@0/10]:0+2+2+2", "[B@5/15]:0+2+2",
-                "[C@0/10]:0+3+3",   "[C@5/15]:0+3",
+            inputTopic1.pipeInput("A", "1", 5L);
+            inputTopic1.pipeInput("B", "2", 6L);
+            inputTopic1.pipeInput("D", "4", 7L);
+            inputTopic1.pipeInput("B", "2", 8L);
+            inputTopic1.pipeInput("C", "3", 9L);
 
-                "[A@5/15]:0+1+1",     "[A@10/20]:0+1",
-                "[B@5/15]:0+2+2+2",   "[B@10/20]:0+2",
-                "[D@5/15]:0+4+4",     "[D@10/20]:0+4",
-                "[B@5/15]:0+2+2+2+2", "[B@10/20]:0+2+2",
-                "[C@5/15]:0+3+3",     "[C@10/20]:0+3"), proc2.processed);
-    }
+            processors.get(0).checkAndClearProcessResult(
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)),  "0+1+1+1",  9),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(5, 15)),  "0+1+1",  9),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2+2",  6),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(5, 15)),  "0+2",  6),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(0, 10)),  "0+4+4",  7),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(5, 15)),  "0+4",  7),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2+2+2",  8),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(5, 15)),  "0+2+2",  8),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(0, 10)),  "0+3+3",  9),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(5, 15)),  "0+3",  9)
+            );
+            processors.get(1).checkAndClearProcessResult(new KeyValueTimestamp[0]);
+            processors.get(2).checkAndClearProcessResult(new KeyValueTimestamp[0]);
 
-    private void setRecordContext(final long time, final String topic) {
-        ((MockProcessorContext) driver.context()).setRecordContext(new ProcessorRecordContext(time, 0, 0, topic));
+            inputTopic2.pipeInput("A", "a", 0L);
+            inputTopic2.pipeInput("B", "b", 1L);
+            inputTopic2.pipeInput("C", "c", 2L);
+            inputTopic2.pipeInput("D", "d", 20L);
+            inputTopic2.pipeInput("A", "a", 20L);
+
+            processors.get(0).checkAndClearProcessResult(new KeyValueTimestamp[0]);
+            processors.get(1).checkAndClearProcessResult(
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)),  "0+a",  0),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+b",  1),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(0, 10)),  "0+c",  2),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(15, 25)),  "0+d",  20),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(20, 30)),  "0+d",  20),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(15, 25)),  "0+a",  20),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(20, 30)),  "0+a",  20)
+            );
+            processors.get(2).checkAndClearProcessResult(
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)),  "0+1+1+1%0+a",  9),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2+2+2%0+b",  8),
+                new KeyValueTimestamp<>(new Windowed<>("C", new TimeWindow(0, 10)),  "0+3+3%0+c",  9));
+
+            inputTopic2.pipeInput("A", "a", 5L);
+            inputTopic2.pipeInput("B", "b", 6L);
+            inputTopic2.pipeInput("D", "d", 7L);
+            inputTopic2.pipeInput("D", "d", 18L);
+            inputTopic2.pipeInput("A", "a", 21L);
+
+            processors.get(0).checkAndClearProcessResult(new KeyValueTimestamp[0]);
+            processors.get(1).checkAndClearProcessResult(
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)),  "0+a+a",  5),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(5, 15)),  "0+a",  5),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+b+b",  6),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(5, 15)),  "0+b",  6),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(0, 10)),  "0+d",  7),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(5, 15)),  "0+d",  7),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(10, 20)),  "0+d",  18),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(15, 25)),  "0+d+d",  20),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(15, 25)),  "0+a+a",  21),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(20, 30)),  "0+a+a",  21)
+            );
+            processors.get(2).checkAndClearProcessResult(
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(0, 10)),  "0+1+1+1%0+a+a",  9),
+                new KeyValueTimestamp<>(new Windowed<>("A", new TimeWindow(5, 15)),  "0+1+1%0+a",  9),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(0, 10)),  "0+2+2+2%0+b+b",  8),
+                new KeyValueTimestamp<>(new Windowed<>("B", new TimeWindow(5, 15)),  "0+2+2%0+b",  8),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(0, 10)),  "0+4+4%0+d",  7),
+                new KeyValueTimestamp<>(new Windowed<>("D", new TimeWindow(5, 15)),  "0+4%0+d",  7)
+            );
+        }
     }
 
     @Test
-    public void testJoin() throws Exception {
-        final KStreamBuilder builder = new KStreamBuilder();
-        String topic1 = "topic1";
-        String topic2 = "topic2";
+    public void shouldLogAndMeterWhenSkippingNullKeyWithBuiltInMetricsVersionLatest() {
+        shouldLogAndMeterWhenSkippingNullKey(StreamsConfig.METRICS_LATEST);
+    }
 
-        KStream<String, String> stream1 = builder.stream(strSerde, strSerde, topic1);
-        KTable<Windowed<String>, String> table1 =
-            stream1.groupByKey(strSerde, strSerde)
-                .aggregate(MockInitializer.STRING_INIT,
-                           MockAggregator.TOSTRING_ADDER,
-                           TimeWindows.of(10).advanceBy(5),
-                           strSerde, "topic1-Canonized");
+    @Test
+    public void shouldLogAndMeterWhenSkippingNullKeyWithBuiltInMetricsVersion0100To24() {
+        shouldLogAndMeterWhenSkippingNullKey(StreamsConfig.METRICS_0100_TO_24);
+    }
 
-        MockProcessorSupplier<Windowed<String>, String> proc1 = new MockProcessorSupplier<>();
-        table1.toStream().process(proc1);
+    private void shouldLogAndMeterWhenSkippingNullKey(final String builtInMetricsVersion) {
+        final StreamsBuilder builder = new StreamsBuilder();
+        final String topic = "topic";
 
-        KStream<String, String> stream2 = builder.stream(strSerde, strSerde, topic2);
-        KTable<Windowed<String>, String> table2 =
-            stream2.groupByKey(strSerde, strSerde)
-                .aggregate(MockInitializer.STRING_INIT,
-                           MockAggregator.TOSTRING_ADDER,
-                           TimeWindows.of(10).advanceBy(5),
-                           strSerde, "topic2-Canonized");
+        builder
+            .stream(topic, Consumed.with(Serdes.String(), Serdes.String()))
+            .groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
+            .windowedBy(TimeWindows.of(ofMillis(10)).advanceBy(ofMillis(5)))
+            .aggregate(
+                MockInitializer.STRING_INIT,
+                MockAggregator.toStringInstance("+"),
+                Materialized.<String, String, WindowStore<Bytes, byte[]>>as("topic1-Canonicalized").withValueSerde(Serdes.String())
+            );
 
-        MockProcessorSupplier<Windowed<String>, String> proc2 = new MockProcessorSupplier<>();
-        table2.toStream().process(proc2);
+        final LogCaptureAppender appender = LogCaptureAppender.createAndRegister();
+        props.setProperty(StreamsConfig.BUILT_IN_METRICS_VERSION_CONFIG, builtInMetricsVersion);
+        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), props)) {
+            final TestInputTopic<String, String> inputTopic =
+                driver.createInputTopic(topic, new StringSerializer(), new StringSerializer());
+            inputTopic.pipeInput(null, "1");
+            LogCaptureAppender.unregister(appender);
 
-
-        MockProcessorSupplier<Windowed<String>, String> proc3 = new MockProcessorSupplier<>();
-        table1.join(table2, new ValueJoiner<String, String, String>() {
-            @Override
-            public String apply(String p1, String p2) {
-                return p1 + "%" + p2;
+            if (StreamsConfig.METRICS_0100_TO_24.equals(builtInMetricsVersion)) {
+                assertEquals(
+                    1.0,
+                    getMetricByName(driver.metrics(), "skipped-records-total", "stream-metrics").metricValue()
+                );
             }
-        }).toStream().process(proc3);
+            assertThat(appender.getMessages(), hasItem("Skipping record due to null key. value=[1] topic=[topic] partition=[0] offset=[0]"));
+        }
+    }
 
-        driver = new KStreamTestDriver(builder, stateDir);
+    @Test
+    public void shouldLogAndMeterWhenSkippingExpiredWindowWithBuiltInMetricsVersionLatest() {
+        shouldLogAndMeterWhenSkippingExpiredWindow(StreamsConfig.METRICS_LATEST);
+    }
 
-        setRecordContext(0, topic1);
-        driver.process(topic1, "A", "1");
-        driver.flushState();
-        setRecordContext(1, topic1);
-        driver.process(topic1, "B", "2");
-        driver.flushState();
-        setRecordContext(2, topic1);
-        driver.process(topic1, "C", "3");
-        driver.flushState();
-        setRecordContext(3, topic1);
-        driver.process(topic1, "D", "4");
-        driver.flushState();
-        setRecordContext(4, topic1);
-        driver.process(topic1, "A", "1");
-        driver.flushState();
+    @Test
+    public void shouldLogAndMeterWhenSkippingExpiredWindowWithBuiltInMetricsVersion0100To24() {
+        shouldLogAndMeterWhenSkippingExpiredWindow(StreamsConfig.METRICS_0100_TO_24);
+    }
 
-        proc1.checkAndClearProcessResult(
-                "[A@0/10]:0+1",
-                "[B@0/10]:0+2",
-                "[C@0/10]:0+3",
-                "[D@0/10]:0+4",
-                "[A@0/10]:0+1+1"
-        );
-        proc2.checkAndClearProcessResult();
-        proc3.checkAndClearProcessResult();
+    @Deprecated // testing deprecated functionality (behavior of until)
+    private void shouldLogAndMeterWhenSkippingExpiredWindow(final String builtInMetricsVersion) {
+        final StreamsBuilder builder = new StreamsBuilder();
+        final String topic = "topic";
 
-        setRecordContext(5, topic1);
-        driver.process(topic1, "A", "1");
-        driver.flushState();
-        setRecordContext(6, topic1);
-        driver.process(topic1, "B", "2");
-        driver.flushState();
-        setRecordContext(7, topic1);
-        driver.process(topic1, "D", "4");
-        driver.flushState();
-        setRecordContext(8, topic1);
-        driver.process(topic1, "B", "2");
-        driver.flushState();
-        setRecordContext(9, topic1);
-        driver.process(topic1, "C", "3");
-        driver.flushState();
+        final KStream<String, String> stream1 = builder.stream(topic, Consumed.with(Serdes.String(), Serdes.String()));
+        stream1.groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
+               .windowedBy(TimeWindows.of(ofMillis(10)).advanceBy(ofMillis(5)).until(100))
+               .aggregate(
+                   () -> "",
+                   MockAggregator.toStringInstance("+"),
+                   Materialized.<String, String, WindowStore<Bytes, byte[]>>as("topic1-Canonicalized").withValueSerde(Serdes.String()).withCachingDisabled().withLoggingDisabled()
+               )
+               .toStream()
+               .map((key, value) -> new KeyValue<>(key.toString(), value))
+               .to("output");
 
-        proc1.checkAndClearProcessResult(
-                "[A@0/10]:0+1+1+1", "[A@5/15]:0+1",
-                "[B@0/10]:0+2+2",   "[B@5/15]:0+2",
-                "[D@0/10]:0+4+4",   "[D@5/15]:0+4",
-                "[B@0/10]:0+2+2+2", "[B@5/15]:0+2+2",
-                "[C@0/10]:0+3+3",   "[C@5/15]:0+3"
-        );
-        proc2.checkAndClearProcessResult();
-        proc3.checkAndClearProcessResult();
+        LogCaptureAppender.setClassLoggerToDebug(KStreamWindowAggregate.class);
+        final LogCaptureAppender appender = LogCaptureAppender.createAndRegister();
+        props.setProperty(StreamsConfig.BUILT_IN_METRICS_VERSION_CONFIG, builtInMetricsVersion);
+        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), props)) {
+            final TestInputTopic<String, String> inputTopic =
+                    driver.createInputTopic(topic, new StringSerializer(), new StringSerializer());
+            inputTopic.pipeInput("k", "100", 100L);
+            inputTopic.pipeInput("k", "0", 0L);
+            inputTopic.pipeInput("k", "1", 1L);
+            inputTopic.pipeInput("k", "2", 2L);
+            inputTopic.pipeInput("k", "3", 3L);
+            inputTopic.pipeInput("k", "4", 4L);
+            inputTopic.pipeInput("k", "5", 5L);
+            inputTopic.pipeInput("k", "6", 6L);
+            LogCaptureAppender.unregister(appender);
 
-        setRecordContext(0, topic1);
-        driver.process(topic2, "A", "a");
-        driver.flushState();
-        setRecordContext(1, topic1);
-        driver.process(topic2, "B", "b");
-        driver.flushState();
-        setRecordContext(2, topic1);
-        driver.process(topic2, "C", "c");
-        driver.flushState();
-        setRecordContext(3, topic1);
-        driver.process(topic2, "D", "d");
-        driver.flushState();
-        setRecordContext(4, topic1);
-        driver.process(topic2, "A", "a");
-        driver.flushState();
+            assertLatenessMetrics(
+                driver,
+                builtInMetricsVersion,
+                is(7.0), // how many events get dropped
+                is(100.0), // k:0 is 100ms late, since its time is 0, but it arrives at stream time 100.
+                is(84.875) // (0 + 100 + 99 + 98 + 97 + 96 + 95 + 94) / 8
+            );
 
-        proc1.checkAndClearProcessResult();
-        proc2.checkAndClearProcessResult(
-                "[A@0/10]:0+a",
-                "[B@0/10]:0+b",
-                "[C@0/10]:0+c",
-                "[D@0/10]:0+d",
-                "[A@0/10]:0+a+a"
-        );
-        proc3.checkAndClearProcessResult(
-                "[A@0/10]:0+1+1+1%0+a",
-                "[B@0/10]:0+2+2+2%0+b",
-                "[C@0/10]:0+3+3%0+c",
-                "[D@0/10]:0+4+4%0+d",
-                "[A@0/10]:0+1+1+1%0+a+a");
+            assertThat(appender.getMessages(), hasItems(
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[1] timestamp=[0] window=[0,10) expiration=[10] streamTime=[100]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[2] timestamp=[1] window=[0,10) expiration=[10] streamTime=[100]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[3] timestamp=[2] window=[0,10) expiration=[10] streamTime=[100]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[4] timestamp=[3] window=[0,10) expiration=[10] streamTime=[100]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[5] timestamp=[4] window=[0,10) expiration=[10] streamTime=[100]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[6] timestamp=[5] window=[0,10) expiration=[10] streamTime=[100]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[7] timestamp=[6] window=[0,10) expiration=[10] streamTime=[100]"
+            ));
 
-        setRecordContext(5, topic1);
-        driver.process(topic2, "A", "a");
-        driver.flushState();
-        setRecordContext(6, topic1);
-        driver.process(topic2, "B", "b");
-        driver.flushState();
-        setRecordContext(7, topic1);
-        driver.process(topic2, "D", "d");
-        driver.flushState();
-        setRecordContext(8, topic1);
-        driver.process(topic2, "B", "b");
-        driver.flushState();
-        setRecordContext(9, topic1);
-        driver.process(topic2, "C", "c");
-        driver.flushState();
-        proc1.checkAndClearProcessResult();
-        proc2.checkAndClearProcessResult(
-                "[A@0/10]:0+a+a+a", "[A@5/15]:0+a",
-                "[B@0/10]:0+b+b",   "[B@5/15]:0+b",
-                "[D@0/10]:0+d+d",   "[D@5/15]:0+d",
-                "[B@0/10]:0+b+b+b", "[B@5/15]:0+b+b",
-                "[C@0/10]:0+c+c",   "[C@5/15]:0+c"
-        );
-        proc3.checkAndClearProcessResult(
-                "[A@0/10]:0+1+1+1%0+a+a+a", "[A@5/15]:0+1%0+a",
-                "[B@0/10]:0+2+2+2%0+b+b",   "[B@5/15]:0+2+2%0+b",
-                "[D@0/10]:0+4+4%0+d+d",     "[D@5/15]:0+4%0+d",
-                "[B@0/10]:0+2+2+2%0+b+b+b", "[B@5/15]:0+2+2%0+b+b",
-                "[C@0/10]:0+3+3%0+c+c",     "[C@5/15]:0+3%0+c"
-        );
+            final TestOutputTopic<String, String> outputTopic =
+                    driver.createOutputTopic("output", new StringDeserializer(), new StringDeserializer());
+
+            assertThat(outputTopic.readRecord(), equalTo(new TestRecord<String, String>("[k@95/105]", "+100", null, 100L)));
+            assertThat(outputTopic.readRecord(), equalTo(new TestRecord<String, String>("[k@100/110]", "+100", null, 100L)));
+            assertThat(outputTopic.readRecord(), equalTo(new TestRecord<String, String>("[k@5/15]", "+5", null, 5L)));
+            assertThat(outputTopic.readRecord(), equalTo(new TestRecord<String, String>("[k@5/15]", "+5+6", null, 6L)));
+            assertTrue(outputTopic.isEmpty());
+        }
+    }
+
+    @Test
+    public void shouldLogAndMeterWhenSkippingExpiredWindowByGraceWithBuiltInMetricsVersionLatest() {
+        shouldLogAndMeterWhenSkippingExpiredWindowByGrace(StreamsConfig.METRICS_LATEST);
+    }
+
+    @Test
+    public void shouldLogAndMeterWhenSkippingExpiredWindowByGraceWithBuiltInMetricsVersion0100To24() {
+        shouldLogAndMeterWhenSkippingExpiredWindowByGrace(StreamsConfig.METRICS_0100_TO_24);
+    }
+
+    private void shouldLogAndMeterWhenSkippingExpiredWindowByGrace(final String builtInMetricsVersion) {
+        final StreamsBuilder builder = new StreamsBuilder();
+        final String topic = "topic";
+
+        final KStream<String, String> stream1 = builder.stream(topic, Consumed.with(Serdes.String(), Serdes.String()));
+        stream1.groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
+               .windowedBy(TimeWindows.of(ofMillis(10)).advanceBy(ofMillis(10)).grace(ofMillis(90L)))
+               .aggregate(
+                   () -> "",
+                   MockAggregator.toStringInstance("+"),
+                   Materialized.<String, String, WindowStore<Bytes, byte[]>>as("topic1-Canonicalized").withValueSerde(Serdes.String()).withCachingDisabled().withLoggingDisabled()
+               )
+               .toStream()
+               .map((key, value) -> new KeyValue<>(key.toString(), value))
+               .to("output");
+
+        LogCaptureAppender.setClassLoggerToDebug(KStreamWindowAggregate.class);
+        final LogCaptureAppender appender = LogCaptureAppender.createAndRegister();
+        props.setProperty(StreamsConfig.BUILT_IN_METRICS_VERSION_CONFIG, builtInMetricsVersion);
+        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), props)) {
+            final TestInputTopic<String, String> inputTopic =
+                    driver.createInputTopic(topic, new StringSerializer(), new StringSerializer());
+            inputTopic.pipeInput("k", "100", 200L);
+            inputTopic.pipeInput("k", "0", 100L);
+            inputTopic.pipeInput("k", "1", 101L);
+            inputTopic.pipeInput("k", "2", 102L);
+            inputTopic.pipeInput("k", "3", 103L);
+            inputTopic.pipeInput("k", "4", 104L);
+            inputTopic.pipeInput("k", "5", 105L);
+            inputTopic.pipeInput("k", "6", 6L);
+            LogCaptureAppender.unregister(appender);
+
+            assertLatenessMetrics(driver, builtInMetricsVersion, is(7.0), is(194.0), is(97.375));
+
+            assertThat(appender.getMessages(), hasItems(
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[1] timestamp=[100] window=[100,110) expiration=[110] streamTime=[200]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[2] timestamp=[101] window=[100,110) expiration=[110] streamTime=[200]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[3] timestamp=[102] window=[100,110) expiration=[110] streamTime=[200]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[4] timestamp=[103] window=[100,110) expiration=[110] streamTime=[200]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[5] timestamp=[104] window=[100,110) expiration=[110] streamTime=[200]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[6] timestamp=[105] window=[100,110) expiration=[110] streamTime=[200]",
+                "Skipping record for expired window. key=[k] topic=[topic] partition=[0] offset=[7] timestamp=[6] window=[0,10) expiration=[110] streamTime=[200]"
+            ));
+
+            final TestOutputTopic<String, String> outputTopic =
+                    driver.createOutputTopic("output", new StringDeserializer(), new StringDeserializer());
+            assertThat(outputTopic.readRecord(), equalTo(new TestRecord<String, String>("[k@200/210]", "+100", null, 200L)));
+            assertTrue(outputTopic.isEmpty());
+        }
+    }
+
+    private void assertLatenessMetrics(final TopologyTestDriver driver,
+                                       final String builtInMetricsVersion,
+                                       final Matcher<Object> dropTotal,
+                                       final Matcher<Object> maxLateness,
+                                       final Matcher<Object> avgLateness) {
+
+        final MetricName dropTotalMetric;
+        final MetricName dropRateMetric;
+        final MetricName latenessMaxMetric;
+        final MetricName latenessAvgMetric;
+        if (StreamsConfig.METRICS_0100_TO_24.equals(builtInMetricsVersion)) {
+            dropTotalMetric = new MetricName(
+                "late-record-drop-total",
+                "stream-processor-node-metrics",
+                "The total number of dropped late records",
+                mkMap(
+                    mkEntry("client-id", threadId),
+                    mkEntry("task-id", "0_0"),
+                    mkEntry("processor-node-id", "KSTREAM-AGGREGATE-0000000001")
+                )
+            );
+            dropRateMetric = new MetricName(
+                "late-record-drop-rate",
+                "stream-processor-node-metrics",
+                "The average number of dropped late records per second",
+                mkMap(
+                    mkEntry("client-id", threadId),
+                    mkEntry("task-id", "0_0"),
+                    mkEntry("processor-node-id", "KSTREAM-AGGREGATE-0000000001")
+                )
+            );
+            latenessMaxMetric = new MetricName(
+                "record-lateness-max",
+                "stream-task-metrics",
+                "The observed maximum lateness of records in milliseconds, measured by comparing the record "
+                    + "timestamp with the current stream time",
+                mkMap(
+                    mkEntry("client-id", threadId),
+                    mkEntry("task-id", "0_0")
+                )
+            );
+            latenessAvgMetric = new MetricName(
+                "record-lateness-avg",
+                "stream-task-metrics",
+                "The observed average lateness of records in milliseconds, measured by comparing the record "
+                    + "timestamp with the current stream time",
+                mkMap(
+                    mkEntry("client-id", threadId),
+                    mkEntry("task-id", "0_0")
+                )
+            );
+        } else {
+            dropTotalMetric = new MetricName(
+                "dropped-records-total",
+                "stream-task-metrics",
+                "The total number of dropped records",
+                mkMap(
+                    mkEntry("thread-id", threadId),
+                    mkEntry("task-id", "0_0")
+                )
+            );
+            dropRateMetric = new MetricName(
+                "dropped-records-rate",
+                "stream-task-metrics",
+                "The average number of dropped records per second",
+                mkMap(
+                    mkEntry("thread-id", threadId),
+                    mkEntry("task-id", "0_0")
+                )
+            );
+            latenessMaxMetric = new MetricName(
+                "record-lateness-max",
+                "stream-task-metrics",
+                "The observed maximum lateness of records in milliseconds, measured by comparing the record "
+                    + "timestamp with the current stream time",
+                mkMap(
+                    mkEntry("thread-id", threadId),
+                    mkEntry("task-id", "0_0")
+                )
+            );
+            latenessAvgMetric = new MetricName(
+                "record-lateness-avg",
+                "stream-task-metrics",
+                "The observed average lateness of records in milliseconds, measured by comparing the record "
+                    + "timestamp with the current stream time",
+                mkMap(
+                    mkEntry("thread-id", threadId),
+                    mkEntry("task-id", "0_0")
+                )
+            );
+
+        }
+        assertThat(driver.metrics().get(dropTotalMetric).metricValue(), dropTotal);
+        assertThat(driver.metrics().get(dropRateMetric).metricValue(), not(0.0));
+        assertThat(driver.metrics().get(latenessMaxMetric).metricValue(), maxLateness);
+        assertThat(driver.metrics().get(latenessAvgMetric).metricValue(), avgLateness);
     }
 
 }

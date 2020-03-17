@@ -20,7 +20,7 @@ import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.Namespace;
-import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.TopicListing;
@@ -52,6 +52,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -246,7 +247,7 @@ public class ClientCompatibilityTest {
     void testAdminClient() throws Throwable {
         Properties adminProps = new Properties();
         adminProps.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, testConfig.bootstrapServer);
-        try (final AdminClient client = AdminClient.create(adminProps)) {
+        try (final Admin client = Admin.create(adminProps)) {
             while (true) {
                 Collection<Node> nodes = client.describeCluster().nodes().get();
                 if (nodes.size() == testConfig.numClusterNodes) {
@@ -260,63 +261,66 @@ public class ClientCompatibilityTest {
                     nodes.size(), testConfig.numClusterNodes);
             }
             tryFeature("createTopics", testConfig.createTopicsSupported,
-                new Invoker() {
-                    @Override
-                    public void invoke() throws Throwable {
-                        try {
-                            client.createTopics(Collections.singleton(
-                                new NewTopic("newtopic", 1, (short) 1))).all().get();
-                        } catch (ExecutionException e) {
-                            throw e.getCause();
-                        }
+                () -> {
+                    try {
+                        client.createTopics(Collections.singleton(
+                            new NewTopic("newtopic", 1, (short) 1))).all().get();
+                    } catch (ExecutionException e) {
+                        throw e.getCause();
                     }
                 },
-                new ResultTester() {
-                    @Override
-                    public void test() throws Throwable {
-                        while (true) {
-                            try {
-                                client.describeTopics(Collections.singleton("newtopic")).all().get();
-                                break;
-                            } catch (ExecutionException e) {
-                                if (e.getCause() instanceof UnknownTopicOrPartitionException)
-                                    continue;
-                                throw e;
-                            }
-                        }
-                    }
-                });
+                () ->  createTopicsResultTest(client, Collections.singleton("newtopic"))
+            );
+
             while (true) {
                 Collection<TopicListing> listings = client.listTopics().listings().get();
                 if (!testConfig.createTopicsSupported)
                     break;
-                boolean foundNewTopic = false;
-                for (TopicListing listing : listings) {
-                    if (listing.name().equals("newtopic")) {
-                        if (listing.isInternal())
-                            throw new KafkaException("Did not expect newtopic to be an internal topic.");
-                        foundNewTopic = true;
-                    }
-                }
-                if (foundNewTopic)
+
+                if (topicExists(listings, "newtopic"))
                     break;
+
                 Thread.sleep(1);
                 log.info("Did not see newtopic.  Retrying listTopics...");
             }
+
             tryFeature("describeAclsSupported", testConfig.describeAclsSupported,
-                new Invoker() {
-                    @Override
-                    public void invoke() throws Throwable {
-                        try {
-                            client.describeAcls(AclBindingFilter.ANY).values().get();
-                        } catch (ExecutionException e) {
-                            if (e.getCause() instanceof SecurityDisabledException)
-                                return;
-                            throw e.getCause();
-                        }
+                () -> {
+                    try {
+                        client.describeAcls(AclBindingFilter.ANY).values().get();
+                    } catch (ExecutionException e) {
+                        if (e.getCause() instanceof SecurityDisabledException)
+                            return;
+                        throw e.getCause();
                     }
                 });
         }
+    }
+
+    private void createTopicsResultTest(Admin client, Collection<String> topics)
+            throws InterruptedException, ExecutionException {
+        while (true) {
+            try {
+                client.describeTopics(topics).all().get();
+                break;
+            } catch (ExecutionException e) {
+                if (e.getCause() instanceof UnknownTopicOrPartitionException)
+                    continue;
+                throw e;
+            }
+        }
+    }
+
+    private boolean topicExists(Collection<TopicListing> listings, String topicName) {
+        boolean foundTopic = false;
+        for (TopicListing listing : listings) {
+            if (listing.name().equals(topicName)) {
+                if (listing.isInternal())
+                    throw new KafkaException(String.format("Did not expect %s to be an internal topic.", topicName));
+                foundTopic = true;
+            }
+        }
+        return foundTopic;
     }
 
     private static class OffsetsForTime {
@@ -336,18 +340,8 @@ public class ClientCompatibilityTest {
         }
 
         @Override
-        public void configure(Map<String, ?> configs, boolean isKey) {
-            // nothing to do
-        }
-
-        @Override
         public byte[] deserialize(String topic, byte[] data) {
             return data;
-        }
-
-        @Override
-        public void close() {
-            // nothing to do
         }
 
         @Override
@@ -370,108 +364,99 @@ public class ClientCompatibilityTest {
         consumerProps.put(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, 512);
         ClientCompatibilityTestDeserializer deserializer =
             new ClientCompatibilityTestDeserializer(testConfig.expectClusterId);
-        final KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(consumerProps, deserializer, deserializer);
-        final List<PartitionInfo> partitionInfos = consumer.partitionsFor(testConfig.topic);
-        if (partitionInfos.size() < 1)
-            throw new RuntimeException("Expected at least one partition for topic " + testConfig.topic);
-        final Map<TopicPartition, Long> timestampsToSearch = new HashMap<>();
-        final LinkedList<TopicPartition> topicPartitions = new LinkedList<>();
-        for (PartitionInfo partitionInfo : partitionInfos) {
-            TopicPartition topicPartition = new TopicPartition(partitionInfo.topic(), partitionInfo.partition());
-            timestampsToSearch.put(topicPartition, prodTimeMs);
-            topicPartitions.add(topicPartition);
-        }
-        final OffsetsForTime offsetsForTime = new OffsetsForTime();
-        tryFeature("offsetsForTimes", testConfig.offsetsForTimesSupported,
-                new Invoker() {
-                    @Override
-                    public void invoke() {
-                        offsetsForTime.result = consumer.offsetsForTimes(timestampsToSearch);
-                    }
-                },
-                new ResultTester() {
-                    @Override
-                    public void test() {
-                        log.info("offsetsForTime = {}", offsetsForTime.result);
-                    }
-                });
-        // Whether or not offsetsForTimes works, beginningOffsets and endOffsets
-        // should work.
-        consumer.beginningOffsets(timestampsToSearch.keySet());
-        consumer.endOffsets(timestampsToSearch.keySet());
+        try (final KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(consumerProps, deserializer, deserializer)) {
+            final List<PartitionInfo> partitionInfos = consumer.partitionsFor(testConfig.topic);
+            if (partitionInfos.size() < 1)
+                throw new RuntimeException("Expected at least one partition for topic " + testConfig.topic);
+            final Map<TopicPartition, Long> timestampsToSearch = new HashMap<>();
+            final LinkedList<TopicPartition> topicPartitions = new LinkedList<>();
+            for (PartitionInfo partitionInfo : partitionInfos) {
+                TopicPartition topicPartition = new TopicPartition(partitionInfo.topic(), partitionInfo.partition());
+                timestampsToSearch.put(topicPartition, prodTimeMs);
+                topicPartitions.add(topicPartition);
+            }
+            final OffsetsForTime offsetsForTime = new OffsetsForTime();
+            tryFeature("offsetsForTimes", testConfig.offsetsForTimesSupported,
+                () -> offsetsForTime.result = consumer.offsetsForTimes(timestampsToSearch),
+                () -> log.info("offsetsForTime = {}", offsetsForTime.result));
+            // Whether or not offsetsForTimes works, beginningOffsets and endOffsets
+            // should work.
+            consumer.beginningOffsets(timestampsToSearch.keySet());
+            consumer.endOffsets(timestampsToSearch.keySet());
 
-        consumer.assign(topicPartitions);
-        consumer.seekToBeginning(topicPartitions);
-        final Iterator<byte[]> iter = new Iterator<byte[]>() {
-            private static final int TIMEOUT_MS = 10000;
-            private Iterator<ConsumerRecord<byte[], byte[]>> recordIter = null;
-            private byte[] next = null;
+            consumer.assign(topicPartitions);
+            consumer.seekToBeginning(topicPartitions);
+            final Iterator<byte[]> iter = new Iterator<byte[]>() {
+                private static final int TIMEOUT_MS = 10000;
+                private Iterator<ConsumerRecord<byte[], byte[]>> recordIter = null;
+                private byte[] next = null;
 
-            private byte[] fetchNext() {
-                while (true) {
-                    long curTime = Time.SYSTEM.milliseconds();
-                    if (curTime - prodTimeMs > TIMEOUT_MS)
-                        throw new RuntimeException("Timed out after " + TIMEOUT_MS + " ms.");
-                    if (recordIter == null) {
-                        ConsumerRecords<byte[], byte[]> records = consumer.poll(100);
-                        recordIter = records.iterator();
+                private byte[] fetchNext() {
+                    while (true) {
+                        long curTime = Time.SYSTEM.milliseconds();
+                        if (curTime - prodTimeMs > TIMEOUT_MS)
+                            throw new RuntimeException("Timed out after " + TIMEOUT_MS + " ms.");
+                        if (recordIter == null) {
+                            ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(100));
+                            recordIter = records.iterator();
+                        }
+                        if (recordIter.hasNext())
+                            return recordIter.next().value();
+                        recordIter = null;
                     }
-                    if (recordIter.hasNext())
-                        return recordIter.next().value();
-                    recordIter = null;
                 }
-            }
 
-            @Override
-            public boolean hasNext() {
-                if (next != null)
-                    return true;
-                next = fetchNext();
-                return next != null;
-            }
+                @Override
+                public boolean hasNext() {
+                    if (next != null)
+                        return true;
+                    next = fetchNext();
+                    return next != null;
+                }
 
-            @Override
-            public byte[] next() {
-                if (!hasNext())
-                    throw new NoSuchElementException();
-                byte[] cur = next;
-                next = null;
-                return cur;
-            }
+                @Override
+                public byte[] next() {
+                    if (!hasNext())
+                        throw new NoSuchElementException();
+                    byte[] cur = next;
+                    next = null;
+                    return cur;
+                }
 
-            @Override
-            public void remove() {
-                throw new UnsupportedOperationException();
-            }
-        };
-        byte[] next = iter.next();
-        try {
-            compareArrays(message1, next);
-            log.debug("Found first message...");
-        } catch (RuntimeException e) {
-            throw new RuntimeException("The first message in this topic was not ours. Please use a new topic when " +
-                    "running this program.");
-        }
-        try {
-            next = iter.next();
-            if (testConfig.expectRecordTooLargeException)
-                throw new RuntimeException("Expected to get a RecordTooLargeException when reading a record " +
-                        "bigger than " + ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG);
+                @Override
+                public void remove() {
+                    throw new UnsupportedOperationException();
+                }
+            };
+            byte[] next = iter.next();
             try {
-                compareArrays(message2, next);
+                compareArrays(message1, next);
+                log.debug("Found first message...");
             } catch (RuntimeException e) {
-                System.out.println("The second message in this topic was not ours. Please use a new " +
-                    "topic when running this program.");
-                Exit.exit(1);
+                throw new RuntimeException("The first message in this topic was not ours. Please use a new topic when " +
+                        "running this program.");
             }
-        } catch (RecordTooLargeException e) {
-            log.debug("Got RecordTooLargeException", e);
-            if (!testConfig.expectRecordTooLargeException)
-                throw new RuntimeException("Got an unexpected RecordTooLargeException when reading a record " +
-                    "bigger than " + ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG);
+            try {
+                next = iter.next();
+                if (testConfig.expectRecordTooLargeException) {
+                    throw new RuntimeException("Expected to get a RecordTooLargeException when reading a record " +
+                            "bigger than " + ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG);
+                }
+                try {
+                    compareArrays(message2, next);
+                } catch (RuntimeException e) {
+                    System.out.println("The second message in this topic was not ours. Please use a new " +
+                        "topic when running this program.");
+                    Exit.exit(1);
+                }
+            } catch (RecordTooLargeException e) {
+                log.debug("Got RecordTooLargeException", e);
+                if (!testConfig.expectRecordTooLargeException)
+                    throw new RuntimeException("Got an unexpected RecordTooLargeException when reading a record " +
+                        "bigger than " + ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG);
+            }
+            log.debug("Closing consumer.");
         }
-        log.debug("Closing consumer.");
-        consumer.close();
         log.info("Closed consumer.");
     }
 
@@ -484,11 +469,7 @@ public class ClientCompatibilityTest {
     }
 
     private void tryFeature(String featureName, boolean supported, Invoker invoker) throws Throwable {
-        tryFeature(featureName, supported, invoker, new ResultTester() {
-                @Override
-                public void test() {
-                }
-            });
+        tryFeature(featureName, supported, invoker, () -> { });
     }
 
     private void tryFeature(String featureName, boolean supported, Invoker invoker, ResultTester resultTester)

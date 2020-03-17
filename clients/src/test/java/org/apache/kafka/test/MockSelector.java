@@ -16,20 +16,22 @@
  */
 package org.apache.kafka.test;
 
+import org.apache.kafka.common.errors.AuthenticationException;
+import org.apache.kafka.common.network.ChannelState;
+import org.apache.kafka.common.network.NetworkReceive;
+import org.apache.kafka.common.network.Selectable;
+import org.apache.kafka.common.network.Send;
+import org.apache.kafka.common.requests.ByteBufferChannel;
+import org.apache.kafka.common.utils.Time;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-
-import org.apache.kafka.common.network.ChannelState;
-import org.apache.kafka.common.network.NetworkReceive;
-import org.apache.kafka.common.network.NetworkSend;
-import org.apache.kafka.common.network.Selectable;
-import org.apache.kafka.common.network.Send;
-import org.apache.kafka.common.utils.Time;
 
 /**
  * A fake selector to use for testing
@@ -37,11 +39,12 @@ import org.apache.kafka.common.utils.Time;
 public class MockSelector implements Selectable {
 
     private final Time time;
-    private final List<Send> initiatedSends = new ArrayList<Send>();
-    private final List<Send> completedSends = new ArrayList<Send>();
-    private final List<NetworkReceive> completedReceives = new ArrayList<NetworkReceive>();
+    private final List<Send> initiatedSends = new ArrayList<>();
+    private final List<Send> completedSends = new ArrayList<>();
+    private final List<ByteBufferChannel> completedSendBuffers = new ArrayList<>();
+    private final List<NetworkReceive> completedReceives = new ArrayList<>();
     private final Map<String, ChannelState> disconnected = new HashMap<>();
-    private final List<String> connected = new ArrayList<String>();
+    private final List<String> connected = new ArrayList<>();
     private final List<DelayedReceive> delayedReceives = new ArrayList<>();
 
     public MockSelector(Time time) {
@@ -63,7 +66,11 @@ public class MockSelector implements Selectable {
 
     @Override
     public void close(String id) {
-        this.disconnected.put(id, ChannelState.LOCAL_CLOSE);
+        // Note that there are no notifications for client-side disconnects
+
+        removeSendsForNode(id, completedSends);
+        removeSendsForNode(id, initiatedSends);
+
         for (int i = 0; i < this.connected.size(); i++) {
             if (this.connected.get(i).equals(id)) {
                 this.connected.remove(i);
@@ -72,9 +79,30 @@ public class MockSelector implements Selectable {
         }
     }
 
+    /**
+     * Simulate a server disconnect. This id will be present in {@link #disconnected()} on
+     * the next {@link #poll(long)}.
+     */
+    public void serverDisconnect(String id) {
+        this.disconnected.put(id, ChannelState.READY);
+        close(id);
+    }
+
+    public void serverAuthenticationFailed(String id) {
+        ChannelState authFailed = new ChannelState(ChannelState.State.AUTHENTICATION_FAILED,
+                new AuthenticationException("Authentication failed"), null);
+        this.disconnected.put(id, authFailed);
+        close(id);
+    }
+
+    private void removeSendsForNode(String id, Collection<Send> sends) {
+        sends.removeIf(send -> id.equals(send.destination()));
+    }
+
     public void clear() {
         this.completedSends.clear();
         this.completedReceives.clear();
+        this.completedSendBuffers.clear();
         this.disconnected.clear();
         this.connected.clear();
     }
@@ -86,8 +114,30 @@ public class MockSelector implements Selectable {
 
     @Override
     public void poll(long timeout) throws IOException {
-        this.completedSends.addAll(this.initiatedSends);
+        completeInitiatedSends();
+        completeDelayedReceives();
+        time.sleep(timeout);
+    }
+
+    private void completeInitiatedSends() throws IOException {
+        for (Send send : initiatedSends) {
+            completeSend(send);
+        }
         this.initiatedSends.clear();
+    }
+
+    private void completeSend(Send send) throws IOException {
+        // Consume the send so that we will be able to send more requests to the destination
+        try (ByteBufferChannel discardChannel = new ByteBufferChannel(send.size())) {
+            while (!send.completed()) {
+                send.writeTo(discardChannel);
+            }
+            completedSends.add(send);
+            completedSendBuffers.add(discardChannel);
+        }
+    }
+
+    private void completeDelayedReceives() {
         for (Send completedSend : completedSends) {
             Iterator<DelayedReceive> delayedReceiveIterator = delayedReceives.iterator();
             while (delayedReceiveIterator.hasNext()) {
@@ -98,7 +148,6 @@ public class MockSelector implements Selectable {
                 }
             }
         }
-        time.sleep(timeout);
     }
 
     @Override
@@ -106,8 +155,8 @@ public class MockSelector implements Selectable {
         return completedSends;
     }
 
-    public void completeSend(NetworkSend send) {
-        this.completedSends.add(send);
+    public List<ByteBufferChannel> completedSendBuffers() {
+        return completedSendBuffers;
     }
 
     @Override
@@ -154,5 +203,11 @@ public class MockSelector implements Selectable {
     @Override
     public boolean isChannelReady(String id) {
         return true;
+    }
+
+    public void reset() {
+        clear();
+        initiatedSends.clear();
+        delayedReceives.clear();
     }
 }

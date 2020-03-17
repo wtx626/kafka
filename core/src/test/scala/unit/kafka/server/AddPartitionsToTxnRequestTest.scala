@@ -19,26 +19,25 @@ package kafka.server
 
 import java.util.Properties
 
-import kafka.utils.TestUtils
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.protocol.{ApiKeys, Errors}
+import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.{AddPartitionsToTxnRequest, AddPartitionsToTxnResponse}
-import org.junit.{Before, Test}
 import org.junit.Assert._
+import org.junit.{Before, Test}
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 
 class AddPartitionsToTxnRequestTest extends BaseRequestTest {
   private val topic1 = "foobartopic"
   val numPartitions = 3
 
-  override def propertyOverrides(properties: Properties): Unit =
+  override def brokerPropertyOverrides(properties: Properties): Unit =
     properties.put(KafkaConfig.AutoCreateTopicsEnableProp, false.toString)
 
   @Before
   override def setUp(): Unit = {
     super.setUp()
-    TestUtils.createTopic(zkUtils, topic1, numPartitions, servers.size, servers, new Properties())
+    createTopic(topic1, numPartitions, servers.size, new Properties())
   }
 
   @Test
@@ -50,7 +49,7 @@ class AddPartitionsToTxnRequestTest extends BaseRequestTest {
 
     val request = createRequest(List(createdTopicPartition, nonExistentTopic))
     val leaderId = servers.head.config.brokerId
-    val response = sendAddPartitionsRequest(leaderId, request)
+    val response = connectAndReceive[AddPartitionsToTxnResponse](request, brokerSocketServer(leaderId))
 
     assertEquals(2, response.errors.size)
 
@@ -61,16 +60,11 @@ class AddPartitionsToTxnRequestTest extends BaseRequestTest {
     assertEquals(Errors.UNKNOWN_TOPIC_OR_PARTITION, response.errors.get(nonExistentTopic))
   }
 
-  private def sendAddPartitionsRequest(leaderId: Int, request: AddPartitionsToTxnRequest) : AddPartitionsToTxnResponse = {
-    val response = connectAndSend(request, ApiKeys.ADD_PARTITIONS_TO_TXN, destination = brokerSocketServer(leaderId))
-    AddPartitionsToTxnResponse.parse(response, request.version)
-  }
-
   private def createRequest(partitions: List[TopicPartition]): AddPartitionsToTxnRequest = {
     val transactionalId = "foobar"
     val producerId = 1000L
     val producerEpoch: Short = 0
-    val builder = new AddPartitionsToTxnRequest.Builder(transactionalId, producerId, producerEpoch, partitions)
+    val builder = new AddPartitionsToTxnRequest.Builder(transactionalId, producerId, producerEpoch, partitions.asJava)
     builder.build()
   }
 }

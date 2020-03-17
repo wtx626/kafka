@@ -76,6 +76,8 @@ public class SchemaBuilder implements Schema {
     private Map<String, String> parameters;
 
     public SchemaBuilder(Type type) {
+        if (null == type)
+            throw new SchemaBuilderException("type cannot be null");
         this.type = type;
         if (type == Type.STRUCT) {
             fields = new LinkedHashMap<>();
@@ -334,12 +336,14 @@ public class SchemaBuilder implements Schema {
      * Get the list of fields for this Schema. Throws a DataException if this schema is not a struct.
      * @return the list of fields for this Schema
      */
+    @Override
     public List<Field> fields() {
         if (type != Type.STRUCT)
             throw new DataException("Cannot list fields on non-struct type");
         return new ArrayList<>(fields.values());
     }
 
+    @Override
     public Field field(String fieldName) {
         if (type != Type.STRUCT)
             throw new DataException("Cannot look up fields on non-struct type");
@@ -378,6 +382,26 @@ public class SchemaBuilder implements Schema {
         return builder;
     }
 
+    static SchemaBuilder arrayOfNull() {
+        return new SchemaBuilder(Type.ARRAY);
+    }
+
+    static SchemaBuilder mapOfNull() {
+        return new SchemaBuilder(Type.MAP);
+    }
+
+    static SchemaBuilder mapWithNullKeys(Schema valueSchema) {
+        SchemaBuilder result = new SchemaBuilder(Type.MAP);
+        result.valueSchema = valueSchema;
+        return result;
+    }
+
+    static SchemaBuilder mapWithNullValues(Schema keySchema) {
+        SchemaBuilder result = new SchemaBuilder(Type.MAP);
+        result.keySchema = keySchema;
+        return result;
+    }
+
     @Override
     public Schema keySchema() {
         return keySchema;
@@ -396,7 +420,7 @@ public class SchemaBuilder implements Schema {
     public Schema build() {
         return new ConnectSchema(type, isOptional(), defaultValue, name, version, doc,
                 parameters == null ? null : Collections.unmodifiableMap(parameters),
-                fields == null ? null : Collections.unmodifiableList(new ArrayList<Field>(fields.values())), keySchema, valueSchema);
+                fields == null ? null : Collections.unmodifiableList(new ArrayList<>(fields.values())), keySchema, valueSchema);
     }
 
     /**

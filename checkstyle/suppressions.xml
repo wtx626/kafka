@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+
 
 <!DOCTYPE suppressions PUBLIC
         "-//Puppy Crawl//DTD Suppressions 1.1//EN"
@@ -8,9 +8,21 @@
 
     <!-- Note that [/\\] must be used as the path separator for cross-platform support -->
 
+    <!-- Generator -->
+    <suppress checks="CyclomaticComplexity|BooleanExpressionComplexity"
+              files="(SchemaGenerator|MessageDataGenerator|FieldSpec).java"/>
+    <suppress checks="NPathComplexity"
+              files="(MessageDataGenerator|FieldSpec).java"/>
+    <suppress checks="JavaNCSS"
+              files="(ApiMessageType).java|MessageDataGenerator.java"/>
+    <suppress checks="MethodLength"
+              files="MessageDataGenerator.java"/>
+
     <!-- Clients -->
     <suppress checks="ClassFanOutComplexity"
-              files="(Fetcher|Sender|SenderTest|ConsumerCoordinator|KafkaConsumer|KafkaProducer|SaslServerAuthenticator|Utils|TransactionManagerTest|KafkaAdminClient|NetworkClient).java"/>
+              files="(Fetcher|Sender|SenderTest|ConsumerCoordinator|KafkaConsumer|KafkaProducer|Utils|TransactionManager|TransactionManagerTest|KafkaAdminClient|NetworkClient|Admin).java"/>
+    <suppress checks="ClassFanOutComplexity"
+              files="(SaslServerAuthenticator|SaslAuthenticatorTest).java"/>
     <suppress checks="ClassFanOutComplexity"
               files="Errors.java"/>
     <suppress checks="ClassFanOutComplexity"
@@ -21,60 +33,80 @@
               files="AbstractResponse.java"/>
 
     <suppress checks="MethodLength"
-              files="KerberosLogin.java|RequestResponseTest.java"/>
+              files="KerberosLogin.java|RequestResponseTest.java|ConnectMetricsRegistry.java|KafkaConsumer.java"/>
 
     <suppress checks="ParameterNumber"
-              files="NetworkClient.java"/>
+              files="NetworkClient.java|FieldSpec.java"/>
     <suppress checks="ParameterNumber"
               files="KafkaConsumer.java"/>
     <suppress checks="ParameterNumber"
-              files="ConsumerCoordinator.java"/>
-    <suppress checks="ParameterNumber"
               files="Fetcher.java"/>
+    <suppress checks="ParameterNumber"
+              files="Sender.java"/>
     <suppress checks="ParameterNumber"
               files="ConfigDef.java"/>
     <suppress checks="ParameterNumber"
               files="DefaultRecordBatch.java"/>
+    <suppress checks="ParameterNumber"
+              files="Sender.java"/>
 
     <suppress checks="ClassDataAbstractionCoupling"
-              files="(KafkaConsumer|ConsumerCoordinator|Fetcher|KafkaProducer|AbstractRequest|AbstractResponse|TransactionManager|KafkaAdminClient).java"/>
+              files="(KafkaConsumer|ConsumerCoordinator|Fetcher|KafkaProducer|AbstractRequest|AbstractResponse|TransactionManager|Admin|KafkaAdminClient).java"/>
     <suppress checks="ClassDataAbstractionCoupling"
-              files="Errors.java"/>
+              files="(Errors|SaslAuthenticatorTest|AgentTest|CoordinatorTest).java"/>
 
     <suppress checks="BooleanExpressionComplexity"
-              files="(Utils|Topic|KafkaLZ4BlockOutputStream|AclData).java"/>
+              files="(Utils|Topic|KafkaLZ4BlockOutputStream|AclData|JoinGroupRequest).java"/>
 
     <suppress checks="CyclomaticComplexity"
-              files="(ConsumerCoordinator|Fetcher|Sender|KafkaProducer|BufferPool|ConfigDef|RecordAccumulator|KerberosLogin|AbstractRequest|AbstractResponse|Selector|SslTransportLayer).java"/>
+              files="(ConsumerCoordinator|Fetcher|Sender|KafkaProducer|BufferPool|ConfigDef|RecordAccumulator|KerberosLogin|AbstractRequest|AbstractResponse|Selector|SslFactory|SslTransportLayer|SaslClientAuthenticator|SaslClientCallbackHandler|SaslServerAuthenticator|AbstractCoordinator|TransactionManager).java"/>
 
     <suppress checks="JavaNCSS"
-              files="AbstractRequest.java|KerberosLogin.java"/>
-
-    <suppress checks="JavaNCSS"
-              files="AbstractRequest.java"/>
+              files="(AbstractRequest|AbstractResponse|KerberosLogin|WorkerSinkTaskTest|TransactionManagerTest|SenderTest|KafkaAdminClient|ConsumerCoordinatorTest).java"/>
 
     <suppress checks="NPathComplexity"
-              files="(BufferPool|MetricName|Node|ConfigDef|SslTransportLayer|MetadataResponse|KerberosLogin|SslTransportLayer|Sender|Serdes).java"/>
+              files="(BufferPool|Fetcher|MetricName|Node|ConfigDef|RecordBatch|SslFactory|SslTransportLayer|MetadataResponse|KerberosLogin|Selector|Sender|Serdes|TokenInformation|Agent|Values|PluginUtils|MiniTrogdorCluster|TasksRequest|KafkaProducer).java"/>
+
+    <suppress checks="(JavaNCSS|CyclomaticComplexity|MethodLength)"
+              files="CoordinatorClient.java"/>
+    <suppress checks="(UnnecessaryParentheses|BooleanExpressionComplexity|CyclomaticComplexity|WhitespaceAfter|LocalVariableName)"
+              files="Murmur3.java"/>
+
+    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS)"
+            files="clients[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
+
+    <suppress checks="NPathComplexity"
+            files="MessageTest.java"/>
 
     <!-- clients tests -->
     <suppress checks="ClassDataAbstractionCoupling"
-              files="(Sender|Fetcher|KafkaConsumer|Metrics|ConsumerCoordinator|RequestResponse|TransactionManager|KafkaAdminClient)Test.java"/>
+              files="(Sender|Fetcher|KafkaConsumer|Metrics|RequestResponse|TransactionManager|KafkaAdminClient|Message|KafkaProducer)Test.java"/>
 
     <suppress checks="ClassFanOutComplexity"
-              files="(ConsumerCoordinator|KafkaConsumer|RequestResponse|Fetcher)Test.java"/>
+              files="(ConsumerCoordinator|KafkaConsumer|RequestResponse|Fetcher|KafkaAdminClient|Message|KafkaProducer)Test.java"/>
+
+    <suppress checks="ClassFanOutComplexity"
+              files="MockAdminClient.java"/>
 
     <suppress checks="JavaNCSS"
-              files="RequestResponseTest.java"/>
+              files="RequestResponseTest.java|FetcherTest.java"/>
+
+    <suppress checks="NPathComplexity"
+              files="MemoryRecordsTest|MetricsTest"/>
+
+    <suppress checks="(WhitespaceAround|LocalVariableName|ImportControl|AvoidStarImport)"
+              files="Murmur3Test.java"/>
 
     <!-- Connect -->
     <suppress checks="ClassFanOutComplexity"
               files="DistributedHerder(|Test).java"/>
-
+    <suppress checks="ClassFanOutComplexity"
+              files="Worker.java"/>
     <suppress checks="MethodLength"
-              files="(KafkaConfigBackingStore|RequestResponseTest).java"/>
+              files="(KafkaConfigBackingStore|RequestResponseTest|WorkerSinkTaskTest).java"/>
 
     <suppress checks="ParameterNumber"
-              files="WorkerSourceTask.java"/>
+              files="(WorkerSinkTask|WorkerSourceTask).java"/>
     <suppress checks="ParameterNumber"
               files="WorkerCoordinator.java"/>
     <suppress checks="ParameterNumber"
@@ -96,58 +128,74 @@
               files="DistributedHerder.java"/>
     <suppress checks="CyclomaticComplexity"
               files="KafkaConfigBackingStore.java"/>
+    <suppress checks="CyclomaticComplexity"
+              files="(Values|ConnectHeader|ConnectHeaders).java"/>
+    <suppress checks="CyclomaticComplexity"
+              files="RocksDBGenericOptionsToDbOptionsColumnFamilyOptionsAdapterTest.java"/>
 
     <suppress checks="JavaNCSS"
               files="KafkaConfigBackingStore.java"/>
+    <suppress checks="JavaNCSS"
+              files="Values.java"/>
 
     <suppress checks="NPathComplexity"
-              files="ConnectRecord.java"/>
-    <suppress checks="NPathComplexity"
-              files="ConnectSchema.java"/>
-    <suppress checks="NPathComplexity"
-              files="FileStreamSourceTask.java"/>
-    <suppress checks="NPathComplexity"
-              files="JsonConverter.java"/>
-    <suppress checks="NPathComplexity"
-              files="DistributedHerder.java"/>
+              files="(DistributedHerder|RestClient|JsonConverter|KafkaConfigBackingStore|FileStreamSourceTask).java"/>
+
+    <suppress checks="MethodLength"
+              files="Values.java"/>
 
     <!-- connect tests-->
     <suppress checks="ClassDataAbstractionCoupling"
               files="(DistributedHerder|KafkaBasedLog)Test.java"/>
 
+    <suppress checks="ClassFanOutComplexity"
+              files="(WorkerSinkTask|WorkerSourceTask)Test.java"/>
+
     <!-- Streams -->
     <suppress checks="ClassFanOutComplexity"
-              files="(KafkaStreams|KStreamImpl|KTableImpl|StreamThread|StreamTask).java"/>
+              files="(TopologyBuilder|KafkaStreams|KStreamImpl|KTableImpl|StreamThread|StreamTask).java"/>
 
     <suppress checks="MethodLength"
-              files="StreamPartitionAssignor.java"/>
+              files="(KTableImpl|StreamsPartitionAssignor.java)"/>
 
     <suppress checks="ParameterNumber"
               files="StreamTask.java"/>
     <suppress checks="ParameterNumber"
+              files="StreamThread.java"/>
+    <suppress checks="ParameterNumber"
               files="RocksDBWindowStoreSupplier.java"/>
 
     <suppress checks="ClassDataAbstractionCoupling"
-              files="(KStreamImpl|StreamPartitionAssignor|KafkaStreams|KTableImpl).java"/>
+              files="(TopologyBuilder|KStreamImpl|StreamsPartitionAssignor|KafkaStreams|KTableImpl).java"/>
 
     <suppress checks="CyclomaticComplexity"
               files="TopologyBuilder.java"/>
     <suppress checks="CyclomaticComplexity"
-              files="StreamPartitionAssignor.java"/>
+              files="StreamsPartitionAssignor.java"/>
     <suppress checks="CyclomaticComplexity"
               files="StreamThread.java"/>
+    <suppress checks="CyclomaticComplexity"
+              files="TaskManager.java"/>
 
     <suppress checks="JavaNCSS"
-              files="StreamPartitionAssignor.java"/>
+              files="StreamsPartitionAssignor.java"/>
 
     <suppress checks="NPathComplexity"
-              files="ProcessorStateManager.java"/>
-    <suppress checks="NPathComplexity"
-              files="StreamPartitionAssignor.java"/>
-    <suppress checks="NPathComplexity"
-              files="StreamThread.java"/>
+              files="(ProcessorStateManager|InternalTopologyBuilder|StreamsPartitionAssignor|StreamThread).java"/>
 
-    <!-- streams tests -->
+    <suppress checks="(FinalLocalVariable|UnnecessaryParentheses|BooleanExpressionComplexity|CyclomaticComplexity|WhitespaceAfter|LocalVariableName)"
+              files="Murmur3.java"/>
+
+    <!-- suppress FinalLocalVariable outside of the streams package. -->
+    <suppress checks="FinalLocalVariable"
+              files="^(?!.*[\\/]org[\\/]apache[\\/]kafka[\\/]streams[\\/].*$)"/>
+
+    <!-- generated code -->
+    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|FinalLocalVariable|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS)"
+              files="streams[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
+
+
+    <!-- Streams tests -->
     <suppress checks="ClassFanOutComplexity"
               files="(StreamThreadTest|StreamTaskTest|ProcessorTopologyTestDriver).java"/>
 
@@ -157,6 +205,11 @@
               files="KStreamKStreamJoinTest.java"/>
     <suppress checks="MethodLength"
               files="KStreamWindowAggregateTest.java"/>
+    <suppress checks="MethodLength"
+              files="RocksDBWindowStoreTest.java"/>
+
+    <suppress checks="MemberName"
+              files="StreamsPartitionAssignorTest.java"/>
 
     <suppress checks="ClassDataAbstractionCoupling"
               files=".*[/\\]streams[/\\].*test[/\\].*.java"/>
@@ -165,9 +218,9 @@
               files="SmokeTestDriver.java"/>
 
     <suppress checks="CyclomaticComplexity"
-              files="KStreamKStreamJoinTest.java"/>
+              files="KStreamKStreamJoinTest.java|KTableKTableForeignKeyJoinIntegrationTest.java"/>
     <suppress checks="CyclomaticComplexity"
-              files="SmokeTestDriver.java"/>
+              files="RelationalSmokeTest.java|SmokeTestDriver.java"/>
 
     <suppress checks="JavaNCSS"
               files="KStreamKStreamJoinTest.java"/>
@@ -175,23 +228,36 @@
               files="SmokeTestDriver.java"/>
 
     <suppress checks="NPathComplexity"
-              files="KStreamKStreamJoinTest.java"/>
-    <suppress checks="NPathComplexity"
-              files="KStreamKStreamLeftJoinTest.java"/>
+              files="EosTestDriver|KStreamKStreamJoinTest.java|RelationalSmokeTest.java|SmokeTestDriver.java|KStreamKStreamLeftJoinTest.java|KTableKTableForeignKeyJoinIntegrationTest.java"/>
+
+    <suppress checks="(FinalLocalVariable|WhitespaceAround|LocalVariableName|ImportControl|AvoidStarImport)"
+              files="Murmur3Test.java"/>
+
+
+    <!-- Streams Test-Utils -->
+    <suppress checks="ClassFanOutComplexity"
+              files="TopologyTestDriver.java"/>
+    <suppress checks="ClassDataAbstractionCoupling"
+              files="TopologyTestDriver.java"/>
 
     <!-- Tools -->
     <suppress checks="ClassDataAbstractionCoupling"
               files="VerifiableConsumer.java"/>
 
     <suppress checks="CyclomaticComplexity"
-              files="StreamsResetter.java"/>
-    <suppress checks="CyclomaticComplexity"
-              files="ProducerPerformance.java"/>
-
-    <suppress checks="NPathComplexity"
+              files="(StreamsResetter|ProducerPerformance|Agent).java"/>
+    <suppress checks="BooleanExpressionComplexity"
               files="StreamsResetter.java"/>
     <suppress checks="NPathComplexity"
-              files="ProducerPerformance.java"/>
+              files="(ProducerPerformance|StreamsResetter|Agent|TransactionalMessageCopier).java"/>
+    <suppress checks="ImportControl"
+              files="SignalLogger.java"/>
+    <suppress checks="IllegalImport"
+              files="SignalLogger.java"/>
+    <suppress checks="ParameterNumber"
+              files="ProduceBenchSpec.java"/>
+    <suppress checks="ParameterNumber"
+              files="SustainedConnectionSpec.java"/>
 
     <!-- Log4J-Appender -->
     <suppress checks="CyclomaticComplexity"

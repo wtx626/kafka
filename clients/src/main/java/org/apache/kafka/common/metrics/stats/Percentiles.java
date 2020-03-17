@@ -60,7 +60,7 @@ public class Percentiles extends SampledStat implements CompoundStat {
 
     @Override
     public List<NamedMeasurable> stats() {
-        List<NamedMeasurable> ms = new ArrayList<NamedMeasurable>(this.percentiles.length);
+        List<NamedMeasurable> ms = new ArrayList<>(this.percentiles.length);
         for (Percentile percentile : this.percentiles) {
             final double pct = percentile.percentile();
             ms.add(new NamedMeasurable(percentile.name(), new Measurable() {
@@ -93,6 +93,7 @@ public class Percentiles extends SampledStat implements CompoundStat {
         return Double.POSITIVE_INFINITY;
     }
 
+    @Override
     public double combine(List<Sample> samples, MetricConfig config, long now) {
         return value(config, now, 0.5);
     }

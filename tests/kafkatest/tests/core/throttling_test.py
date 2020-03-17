@@ -53,7 +53,7 @@ class ThrottlingTest(ProduceConsumeValidateTest):
         # ensure that the consumer is fully started before the producer starts
         # so that we don't miss any messages. This timeout ensures the sufficient
         # condition.
-        self.consumer_init_timeout_sec =  20
+        self.consumer_init_timeout_sec =  60
         self.num_brokers = 6
         self.num_partitions = 3
         self.kafka = KafkaService(test_context,
@@ -150,9 +150,7 @@ class ThrottlingTest(ProduceConsumeValidateTest):
         bulk_producer = ProducerPerformanceService(
             context=self.test_context, num_nodes=1, kafka=self.kafka,
             topic=self.topic, num_records=self.num_records,
-            record_size=self.record_size, throughput=-1, client_id=producer_id,
-            jmx_object_names=['kafka.producer:type=producer-metrics,client-id=%s' % producer_id],
-            jmx_attributes=['outgoing-byte-rate'])
+            record_size=self.record_size, throughput=-1, client_id=producer_id)
 
 
         self.producer = VerifiableProducer(context=self.test_context,
@@ -167,9 +165,16 @@ class ThrottlingTest(ProduceConsumeValidateTest):
                                         self.topic,
                                         consumer_timeout_ms=60000,
                                         message_validator=is_int,
-                                        from_beginning=False)
+                                        from_beginning=False,
+                                        wait_until_partitions_assigned=True)
 
         self.kafka.start()
         bulk_producer.run()
         self.run_produce_consume_validate(core_test_action=
                                           lambda: self.reassign_partitions(bounce_brokers, self.throttle))
+
+        self.logger.debug("Bulk producer outgoing-byte-rates: %s",
+                          (metric.value for k, metrics in
+                          bulk_producer.metrics(group='producer-metrics', name='outgoing-byte-rate', client_id=producer_id) for
+                          metric in metrics)
+        )

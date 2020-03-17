@@ -17,66 +17,40 @@
 
 package kafka.security.auth
 
-import kafka.utils.Json
+import kafka.security.authorizer.AclEntry
+import org.apache.kafka.common.resource.ResourcePattern
 import org.apache.kafka.common.security.auth.KafkaPrincipal
 
+@deprecated("Use org.apache.kafka.common.acl.AclBinding", "Since 2.5")
 object Acl {
-  val WildCardPrincipal: KafkaPrincipal = new KafkaPrincipal(KafkaPrincipal.USER_TYPE, "*")
-  val WildCardHost: String = "*"
+  val WildCardPrincipal: KafkaPrincipal = AclEntry.WildcardPrincipal
+  val WildCardHost: String = AclEntry.WildcardHost
+  val WildCardResource: String = ResourcePattern.WILDCARD_RESOURCE
   val AllowAllAcl = new Acl(WildCardPrincipal, Allow, WildCardHost, All)
-  val PrincipalKey = "principal"
-  val PermissionTypeKey = "permissionType"
-  val OperationKey = "operation"
-  val HostsKey = "host"
-  val VersionKey = "version"
-  val CurrentVersion = 1
-  val AclsKey = "acls"
+  val PrincipalKey = AclEntry.PrincipalKey
+  val PermissionTypeKey = AclEntry.PermissionTypeKey
+  val OperationKey = AclEntry.OperationKey
+  val HostsKey = AclEntry.HostsKey
+  val VersionKey = AclEntry.VersionKey
+  val CurrentVersion = AclEntry.CurrentVersion
+  val AclsKey = AclEntry.AclsKey
 
   /**
    *
-   * @param aclJson
-   *
-   * <p>
-      {
-        "version": 1,
-        "acls": [
-          {
-            "host":"host1",
-            "permissionType": "Deny",
-            "operation": "Read",
-            "principal": "User:alice"
-          }
-        ]
-      }
-   * </p>
-   *
-   * @return
+   * @see AclEntry
    */
-  def fromJson(aclJson: String): Set[Acl] = {
-    if (aclJson == null || aclJson.isEmpty)
-      return collection.immutable.Set.empty[Acl]
-
-    var acls: collection.mutable.HashSet[Acl] = new collection.mutable.HashSet[Acl]()
-    Json.parseFull(aclJson) match {
-      case Some(m) =>
-        val aclMap = m.asInstanceOf[Map[String, Any]]
-        //the acl json version.
-        require(aclMap(VersionKey) == CurrentVersion)
-        val aclSet: List[Map[String, Any]] = aclMap(AclsKey).asInstanceOf[List[Map[String, Any]]]
-        aclSet.foreach(item => {
-          val principal: KafkaPrincipal = KafkaPrincipal.fromString(item(PrincipalKey).asInstanceOf[String])
-          val permissionType: PermissionType = PermissionType.fromString(item(PermissionTypeKey).asInstanceOf[String])
-          val operation: Operation = Operation.fromString(item(OperationKey).asInstanceOf[String])
-          val host: String = item(HostsKey).asInstanceOf[String]
-          acls += new Acl(principal, permissionType, host, operation)
-        })
-      case None =>
-    }
-    acls.toSet
+  def fromBytes(bytes: Array[Byte]): Set[Acl] = {
+    AclEntry.fromBytes(bytes)
+      .map(ace => Acl(ace.kafkaPrincipal,
+        PermissionType.fromJava(ace.permissionType()),
+        ace.host(),
+        Operation.fromJava(ace.operation())))
   }
 
   def toJsonCompatibleMap(acls: Set[Acl]): Map[String, Any] = {
-    Map(Acl.VersionKey -> Acl.CurrentVersion, Acl.AclsKey -> acls.map(acl => acl.toMap).toList)
+    AclEntry.toJsonCompatibleMap(acls.map(acl =>
+      AclEntry(acl.principal, acl.permissionType.toJava, acl.host, acl.operation.toJava)
+    ))
   }
 }
 
@@ -90,6 +64,7 @@ object Acl {
  * @param host A value of * indicates all hosts.
  * @param operation A value of ALL indicates all operations.
  */
+@deprecated("Use org.apache.kafka.common.acl.AclBinding", "Since 2.5")
 case class Acl(principal: KafkaPrincipal, permissionType: PermissionType, host: String, operation: Operation) {
 
   /**

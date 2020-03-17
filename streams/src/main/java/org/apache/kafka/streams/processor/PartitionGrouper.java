@@ -29,7 +29,10 @@ import java.util.Set;
  * such that each generated partition group is assigned with a distinct {@link TaskId};
  * the created task ids will then be assigned to Kafka Streams instances that host the stream
  * processing application.
+ *
+ * @deprecated since 2.4 release; will be removed in 3.0.0 via KAFKA-7785
  */
+@Deprecated
 public interface PartitionGrouper {
 
     /**
@@ -43,7 +46,7 @@ public interface PartitionGrouper {
      * The default partition grouper implements this interface by assigning all partitions across different topics with the same
      * partition id into the same task. See {@link DefaultPartitionGrouper} for more information.
      *
-     * @param topicGroups The map from the {@link TopologyBuilder#topicGroups()} topic group} id to topics
+     * @param topicGroups The map from the topic group id to topics
      * @param metadata Metadata of the consuming cluster
      * @return a map of task ids to groups of partitions
      */

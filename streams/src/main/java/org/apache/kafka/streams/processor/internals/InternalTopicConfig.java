@@ -16,110 +16,66 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
+import java.util.HashMap;
+import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.internals.Topic;
 
 import java.util.Map;
 import java.util.Objects;
-import java.util.Properties;
-import java.util.Set;
+import java.util.Optional;
 
 /**
  * InternalTopicConfig captures the properties required for configuring
  * the internal topics we create for change-logs and repartitioning etc.
  */
-public class InternalTopicConfig {
-    public enum CleanupPolicy { compact, delete }
+public abstract class InternalTopicConfig {
+    final String name;
+    final Map<String, String> topicConfigs;
 
-    private final String name;
-    private final Map<String, String> logConfig;
-    private final Set<CleanupPolicy> cleanupPolicies;
+    private Optional<Integer> numberOfPartitions = Optional.empty();
 
-    private Long retentionMs;
+    static final Map<String, String> INTERNAL_TOPIC_DEFAULT_OVERRIDES = new HashMap<>();
+    static {
+        INTERNAL_TOPIC_DEFAULT_OVERRIDES.put(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG, "CreateTime");
+    }
 
-    public InternalTopicConfig(final String name, final Set<CleanupPolicy> defaultCleanupPolicies, final Map<String, String> logConfig) {
+    InternalTopicConfig(final String name, final Map<String, String> topicConfigs) {
         Objects.requireNonNull(name, "name can't be null");
         Topic.validate(name);
 
-        if (defaultCleanupPolicies.isEmpty()) {
-            throw new IllegalArgumentException("Must provide at least one cleanup policy");
-        }
         this.name = name;
-        this.cleanupPolicies = defaultCleanupPolicies;
-        this.logConfig = logConfig;
-    }
-
-    /* for test use only */
-    boolean isCompacted() {
-        return cleanupPolicies.contains(CleanupPolicy.compact);
-    }
-
-    private boolean isCompactDelete() {
-        return cleanupPolicies.contains(CleanupPolicy.compact) && cleanupPolicies.contains(CleanupPolicy.delete);
+        this.topicConfigs = topicConfigs;
     }
 
     /**
-     * Get the configured properties for this topic. If rententionMs is set then
+     * Get the configured properties for this topic. If retentionMs is set then
      * we add additionalRetentionMs to work out the desired retention when cleanup.policy=compact,delete
      *
      * @param additionalRetentionMs - added to retention to allow for clock drift etc
      * @return Properties to be used when creating the topic
      */
-    public Properties toProperties(final long additionalRetentionMs) {
-        final Properties result = new Properties();
-        for (Map.Entry<String, String> configEntry : logConfig.entrySet()) {
-            result.put(configEntry.getKey(), configEntry.getValue());
-        }
-        if (retentionMs != null && isCompactDelete()) {
-            result.put(InternalTopicManager.RETENTION_MS, String.valueOf(retentionMs + additionalRetentionMs));
-        }
-
-        if (!logConfig.containsKey(InternalTopicManager.CLEANUP_POLICY_PROP)) {
-            final StringBuilder builder = new StringBuilder();
-            for (CleanupPolicy cleanupPolicy : cleanupPolicies) {
-                builder.append(cleanupPolicy.name()).append(",");
-            }
-            builder.deleteCharAt(builder.length() - 1);
-
-            result.put(InternalTopicManager.CLEANUP_POLICY_PROP, builder.toString());
-        }
-
-
-        return result;
-    }
+    abstract public Map<String, String> getProperties(final Map<String, String> defaultProperties, final long additionalRetentionMs);
 
     public String name() {
         return name;
     }
 
-    public void setRetentionMs(final long retentionMs) {
-        if (!logConfig.containsKey(InternalTopicManager.RETENTION_MS)) {
-            this.retentionMs = retentionMs;
+    public Optional<Integer> numberOfPartitions() {
+        return numberOfPartitions;
+    }
+
+    public void setNumberOfPartitions(final int numberOfPartitions) {
+        if (numberOfPartitions < 1) {
+            throw new IllegalArgumentException("Number of partitions must be at least 1.");
         }
-    }
-
-    @Override
-    public boolean equals(final Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        final InternalTopicConfig that = (InternalTopicConfig) o;
-        return Objects.equals(name, that.name) &&
-                Objects.equals(logConfig, that.logConfig) &&
-                Objects.equals(retentionMs, that.retentionMs) &&
-                Objects.equals(cleanupPolicies, that.cleanupPolicies);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(name, logConfig, retentionMs, cleanupPolicies);
+        this.numberOfPartitions = Optional.of(numberOfPartitions);
     }
 
     @Override
     public String toString() {
         return "InternalTopicConfig(" +
                 "name=" + name +
-                ", logConfig=" + logConfig +
-                ", cleanupPolicies=" + cleanupPolicies +
-                ", retentionMs=" + retentionMs +
+                ", topicConfigs=" + topicConfigs +
                 ")";
     }
 }

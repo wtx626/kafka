@@ -18,12 +18,13 @@ package org.apache.kafka.clients.consumer;
 
 import org.apache.kafka.common.TopicPartition;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Map;
 
 /**
  * A callback interface that the user can implement to trigger custom actions when a commit request completes. The callback
- * may be executed in any thread calling {@link Consumer#poll(long) poll()}.
+ * may be executed in any thread calling {@link Consumer#poll(java.time.Duration) poll()}.
  */
 public interface OffsetCommitCallback {
 
@@ -37,12 +38,15 @@ public interface OffsetCommitCallback {
      * @throws org.apache.kafka.clients.consumer.CommitFailedException if the commit failed and cannot be retried.
      *             This can only occur if you are using automatic group management with {@link KafkaConsumer#subscribe(Collection)},
      *             or if there is an active group with the same groupId which is using group management.
+     * @throws org.apache.kafka.common.errors.RebalanceInProgressException if the commit failed because
+     *            it is in the middle of a rebalance. In such cases
+     *            commit could be retried after the rebalance is completed with the {@link KafkaConsumer#poll(Duration)} call.
      * @throws org.apache.kafka.common.errors.WakeupException if {@link KafkaConsumer#wakeup()} is called before or while this
      *             function is called
      * @throws org.apache.kafka.common.errors.InterruptException if the calling thread is interrupted before or while
      *             this function is called
      * @throws org.apache.kafka.common.errors.AuthorizationException if not authorized to the topic or to the
-     *             configured groupId
+     *             configured groupId. See the exception for more details
      * @throws org.apache.kafka.common.KafkaException for any other unrecoverable errors (e.g. if offset metadata
      *             is too large or if the committed offset is invalid).
      */

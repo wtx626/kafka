@@ -16,82 +16,64 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.message.StopReplicaResponseData;
+import org.apache.kafka.common.message.StopReplicaResponseData.StopReplicaPartitionError;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class StopReplicaResponse extends AbstractResponse {
-
-    private static final String ERROR_CODE_KEY_NAME = "error_code";
-    private static final String PARTITIONS_KEY_NAME = "partitions";
-
-    private static final String PARTITIONS_TOPIC_KEY_NAME = "topic";
-    private static final String PARTITIONS_PARTITION_KEY_NAME = "partition";
-    private static final String PARTITIONS_ERROR_CODE_KEY_NAME = "error_code";
-
-    private final Map<TopicPartition, Errors> responses;
 
     /**
      * Possible error code:
      *
      * STALE_CONTROLLER_EPOCH (11)
+     * STALE_BROKER_EPOCH (77)
      */
-    private final Errors error;
+    private final StopReplicaResponseData data;
 
-    public StopReplicaResponse(Errors error, Map<TopicPartition, Errors> responses) {
-        this.responses = responses;
-        this.error = error;
+    public StopReplicaResponse(StopReplicaResponseData data) {
+        this.data = data;
     }
 
-    public StopReplicaResponse(Struct struct) {
-        responses = new HashMap<>();
-        for (Object responseDataObj : struct.getArray(PARTITIONS_KEY_NAME)) {
-            Struct responseData = (Struct) responseDataObj;
-            String topic = responseData.getString(PARTITIONS_TOPIC_KEY_NAME);
-            int partition = responseData.getInt(PARTITIONS_PARTITION_KEY_NAME);
-            Errors error = Errors.forCode(responseData.getShort(PARTITIONS_ERROR_CODE_KEY_NAME));
-            responses.put(new TopicPartition(topic, partition), error);
-        }
-
-        error = Errors.forCode(struct.getShort(ERROR_CODE_KEY_NAME));
+    public StopReplicaResponse(Struct struct, short version) {
+        data = new StopReplicaResponseData(struct, version);
     }
 
-    public Map<TopicPartition, Errors> responses() {
-        return responses;
+    public List<StopReplicaPartitionError> partitionErrors() {
+        return data.partitionErrors();
     }
 
     public Errors error() {
-        return error;
+        return Errors.forCode(data.errorCode());
+    }
+
+    @Override
+    public Map<Errors, Integer> errorCounts() {
+        if (data.errorCode() != Errors.NONE.code())
+            // Minor optimization since the top-level error applies to all partitions
+            return Collections.singletonMap(error(), data.partitionErrors().size());
+        return errorCounts(data.partitionErrors().stream().map(p -> Errors.forCode(p.errorCode())).collect(Collectors.toList()));
     }
 
     public static StopReplicaResponse parse(ByteBuffer buffer, short version) {
-        return new StopReplicaResponse(ApiKeys.STOP_REPLICA.parseResponse(version, buffer));
+        return new StopReplicaResponse(ApiKeys.STOP_REPLICA.parseResponse(version, buffer), version);
     }
 
     @Override
     protected Struct toStruct(short version) {
-        Struct struct = new Struct(ApiKeys.STOP_REPLICA.responseSchema(version));
-
-        List<Struct> responseDatas = new ArrayList<>(responses.size());
-        for (Map.Entry<TopicPartition, Errors> response : responses.entrySet()) {
-            Struct partitionData = struct.instance(PARTITIONS_KEY_NAME);
-            TopicPartition partition = response.getKey();
-            partitionData.set(PARTITIONS_TOPIC_KEY_NAME, partition.topic());
-            partitionData.set(PARTITIONS_PARTITION_KEY_NAME, partition.partition());
-            partitionData.set(PARTITIONS_ERROR_CODE_KEY_NAME, response.getValue().code());
-            responseDatas.add(partitionData);
-        }
-
-        struct.set(PARTITIONS_KEY_NAME, responseDatas.toArray());
-        struct.set(ERROR_CODE_KEY_NAME, error.code());
-
-        return struct;
+        return data.toStruct(version);
     }
+
+    @Override
+    public String toString() {
+        return data.toString();
+    }
+
 }

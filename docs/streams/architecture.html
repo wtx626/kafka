@@ -19,6 +19,19 @@
 
 <script id="content-template" type="text/x-handlebars-template">
     <h1>Architecture</h1>
+    <div class="sub-nav-sticky">
+        <div class="sticky-top">
+            <div style="height:35px">
+                <a href="/{{version}}/documentation/streams/">Introduction</a>
+                <a href="/{{version}}/documentation/streams/quickstart">Run Demo App</a>
+                <a href="/{{version}}/documentation/streams/tutorial">Tutorial: Write App</a>
+                <a href="/{{version}}/documentation/streams/core-concepts">Concepts</a>
+                <a class="active-menu-item" href="/{{version}}/documentation/streams/architecture">Architecture</a>
+                <a href="/{{version}}/documentation/streams/developer-guide/">Developer Guide</a>
+                <a href="/{{version}}/documentation/streams/upgrade-guide">Upgrade</a>
+            </div>
+        </div>
+    </div>
 
     Kafka Streams simplifies application development by building on the Kafka producer and consumer libraries and leveraging the native capabilities of
     Kafka to offer data parallelism, distributed coordination, fault tolerance, and operational simplicity. In this section, we describe how Kafka Streams works underneath the covers.
@@ -50,6 +63,14 @@
         never changes so that each task is a fixed unit of parallelism of the application. Tasks can then instantiate their own processor topology
         based on the assigned partitions; they also maintain a buffer for each of its assigned partitions and process messages one-at-a-time from
         these record buffers. As a result stream tasks can be processed independently and in parallel without manual intervention.
+    </p>
+
+    <p>
+        Slightly simplified, the maximum parallelism at which your application may run is bounded by the maximum number of stream tasks, which itself is determined by
+        maximum number of partitions of the input topic(s) the application is reading from. For example, if your input topic has 5 partitions, then you can run up to 5
+        applications instances. These instances will collaboratively process the topic’s data. If you run a larger number of app instances than partitions of the input
+        topic, the “excess” app instances will launch but remain idle; however, if one of the busy instances goes down, one of the idle instances will resume the former’s
+        work.
     </p>
 
     <p>
@@ -110,7 +131,7 @@
     <p>
         Kafka Streams builds on fault-tolerance capabilities integrated natively within Kafka. Kafka partitions are highly available and replicated; so when stream data is persisted to Kafka it is available
         even if the application fails and needs to re-process it. Tasks in Kafka Streams leverage the fault-tolerance capability
-        offered by the <a href="https://www.confluent.io/blog/tutorial-getting-started-with-the-new-apache-kafka-0.9-consumer-client/">Kafka consumer client</a> to handle failures.
+        offered by the Kafka consumer client to handle failures.
         If a task runs on a machine that fails, Kafka Streams automatically restarts the task in one of the remaining running instances of the application.
     </p>
 
@@ -143,7 +164,7 @@
         <!--#include virtual="../../includes/_docs_banner.htm" -->
         <ul class="breadcrumbs">
             <li><a href="/documentation">Documentation</a></li>
-            <li><a href="/documentation/streams">Streams</a></li>
+            <li><a href="/documentation/streams">Kafka Streams</a></li>
         </ul>
         <div class="p-content"></div>
     </div>

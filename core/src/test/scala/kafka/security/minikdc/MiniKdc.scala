@@ -28,7 +28,6 @@ import java.util.{Locale, Properties, UUID}
 import kafka.utils.{CoreUtils, Exit, Logging}
 
 import scala.collection.JavaConverters._
-import org.apache.commons.io.IOUtils
 import org.apache.commons.lang.text.StrSubstitutor
 import org.apache.directory.api.ldap.model.entry.{DefaultEntry, Entry}
 import org.apache.directory.api.ldap.model.ldif.LdifReader
@@ -114,7 +113,7 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
 
   def host: String = config.getProperty(MiniKdc.KdcBindAddress)
 
-  def start() {
+  def start(): Unit = {
     if (kdc != null)
       throw new RuntimeException("KDC already started")
     if (closed)
@@ -124,7 +123,7 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
     initJvmKerberosConfig()
   }
 
-  private def initDirectoryService() {
+  private def initDirectoryService(): Unit = {
     ds = new DefaultDirectoryService
     ds.setInstanceLayout(new InstanceLayout(workDir))
     ds.setCacheService(new CacheService)
@@ -188,9 +187,9 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
     ds.getAdminSession.add(entry)
   }
 
-  private def initKdcServer() {
+  private def initKdcServer(): Unit = {
 
-    def addInitialEntriesToDirectoryService(bindAddress: String) {
+    def addInitialEntriesToDirectoryService(bindAddress: String): Unit = {
       val map = Map (
         "0" -> orgName.toLowerCase(Locale.ENGLISH),
         "1" -> orgDomain.toLowerCase(Locale.ENGLISH),
@@ -198,9 +197,15 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
         "3" -> orgDomain.toUpperCase(Locale.ENGLISH),
         "4" -> bindAddress
       )
-      val inputStream = MiniKdc.getResourceAsStream("minikdc.ldiff")
-      try addEntriesToDirectoryService(StrSubstitutor.replace(IOUtils.toString(inputStream), map.asJava))
-      finally CoreUtils.swallow(inputStream.close())
+      val reader = new BufferedReader(new InputStreamReader(MiniKdc.getResourceAsStream("minikdc.ldiff")))
+      try {
+        var line: String = null
+        val builder = new StringBuilder
+        while ({line = reader.readLine(); line != null})
+          builder.append(line).append("\n")
+        addEntriesToDirectoryService(StrSubstitutor.replace(builder, map.asJava))
+      }
+      finally CoreUtils.swallow(reader.close(), this)
     }
 
     val bindAddress = config.getProperty(MiniKdc.KdcBindAddress)
@@ -240,7 +245,7 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
     refreshJvmKerberosConfig()
   }
 
-  private def writeKrb5Conf() {
+  private def writeKrb5Conf(): Unit = {
     val stringBuilder = new StringBuilder
     val reader = new BufferedReader(
       new InputStreamReader(MiniKdc.getResourceAsStream("minikdc-krb5.conf"), StandardCharsets.UTF_8))
@@ -249,21 +254,21 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
       while ({line = reader.readLine(); line != null}) {
         stringBuilder.append(line).append("{3}")
       }
-    } finally CoreUtils.swallow(reader.close())
+    } finally CoreUtils.swallow(reader.close(), this)
     val output = MessageFormat.format(stringBuilder.toString, realm, host, port.toString, System.lineSeparator())
     Files.write(krb5conf.toPath, output.getBytes(StandardCharsets.UTF_8))
   }
 
   private def refreshJvmKerberosConfig(): Unit = {
     val klass =
-      if (Java.isIBMJdk)
+      if (Java.isIbmJdk)
         Class.forName("com.ibm.security.krb5.internal.Config")
       else
         Class.forName("sun.security.krb5.Config")
     klass.getMethod("refresh").invoke(klass)
   }
 
-  def stop() {
+  def stop(): Unit = {
     if (!closed) {
       closed = true
       if (kdc != null) {
@@ -286,7 +291,7 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
     * @param principal principal name, do not include the domain.
     * @param password  password.
     */
-  private def createPrincipal(principal: String, password: String) {
+  private def createPrincipal(principal: String, password: String): Unit = {
     val ldifContent = s"""
       |dn: uid=$principal,ou=users,dc=${orgName.toLowerCase(Locale.ENGLISH)},dc=${orgDomain.toLowerCase(Locale.ENGLISH)}
       |objectClass: top
@@ -311,7 +316,7 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
     * @param keytabFile keytab file to add the created principals
     * @param principals principals to add to the KDC, do not include the domain.
     */
-  def createPrincipal(keytabFile: File, principals: String*) {
+  def createPrincipal(keytabFile: File, principals: String*): Unit = {
     val generatedPassword = UUID.randomUUID.toString
     val keytab = new Keytab
     val entries = principals.flatMap { principal =>
@@ -332,7 +337,7 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
     try {
       for (ldifEntry <- reader.asScala)
         ds.getAdminSession.add(new DefaultEntry(ds.getSchemaManager, ldifEntry.getEntry))
-    } finally CoreUtils.swallow(reader.close())
+    } finally CoreUtils.swallow(reader.close(), this)
   }
 
 }
@@ -342,7 +347,7 @@ object MiniKdc {
   val JavaSecurityKrb5Conf = "java.security.krb5.conf"
   val SunSecurityKrb5Debug = "sun.security.krb5.debug"
 
-  def main(args: Array[String]) {
+  def main(args: Array[String]): Unit = {
     args match {
       case Array(workDirPath, configPath, keytabPath, principals@ _*) if principals.nonEmpty =>
         val workDir = new File(workDirPath)
@@ -365,7 +370,7 @@ object MiniKdc {
     }
   }
 
-  private def start(workDir: File, config: Properties, keytabFile: File, principals: Seq[String]) {
+  private[minikdc] def start(workDir: File, config: Properties, keytabFile: File, principals: Seq[String]): MiniKdc = {
     val miniKdc = new MiniKdc(config, workDir)
     miniKdc.start()
     miniKdc.createPrincipal(keytabFile, principals: _*)
@@ -385,9 +390,8 @@ object MiniKdc {
       |
     """.stripMargin
     println(infoMessage)
-    Runtime.getRuntime.addShutdownHook(CoreUtils.newThread("minikdc-shutdown-hook", daemon = false) {
-      miniKdc.stop()
-    })
+    Exit.addShutdownHook("minikdc-shutdown-hook", miniKdc.stop)
+    miniKdc
   }
 
   val OrgName = "org.name"
